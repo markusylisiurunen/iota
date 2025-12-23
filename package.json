@@ -1,0 +1,30 @@
+{
+  "name": "@markusylisiurunen/iota",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "check": "biome check --write . && tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.10",
+    "@types/node": "^24.10.4",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -31,10 +31,10 @@ export function calculateCost(model: Model, usage: Usage): Usage["cost"] {
   return usage.cost;
 }
 
-const gpt52Chat = {
+const gpt52 = {
   provider: "openai",
-  id: "gpt-5.2-chat-latest",
-  name: "GPT-5.2 Chat",
+  id: "gpt-5.2",
+  name: "GPT-5.2",
   baseUrl: "https://api.openai.com/v1",
   contextWindow: 128000,
   maxOutputTokens: 16384,
@@ -48,8 +48,7 @@ const gpt52Chat = {
 } as const satisfies Model<"openai">;
 
 export const openaiModels = {
-  "gpt-5.2": gpt52Chat,
-  "gpt-5.2-chat-latest": gpt52Chat,
+  "gpt-5.2": gpt52,
 } as const;
 
 export type OpenAIModelId = keyof typeof openaiModels;

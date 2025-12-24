@@ -1,3 +1,4 @@
+export { AgentStream } from "./agent-stream.js";
 export { AssistantStream } from "./assistant-stream.js";
 export type * from "./models.js";
 
@@ -12,6 +13,7 @@ export {
   supportsXhigh,
 } from "./models.js";
 export {
+  agent,
   complete,
   completeOrThrow,
   getApiKey,

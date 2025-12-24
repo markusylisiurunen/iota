@@ -42,7 +42,7 @@ export function streamAnthropic(
     const thinkingSignatureByIndex = new Map<number, string>();
 
     try {
-      const client = new Anthropic({ apiKey: options.apiKey });
+      const client = createClient(options.apiKey, options.reasoning !== "none");
       const params = buildParams(model, context, options);
       const anthropicStream = client.messages.stream(params, {
         signal: options.signal,
@@ -248,6 +248,18 @@ function convertTools(tools: Tool[]) {
     description: tool.description,
     input_schema: tool.parameters as any,
   }));
+}
+
+function createClient(apiKey: string, interleavedThinking: boolean): Anthropic {
+  const betaFeatures = ["fine-grained-tool-streaming-2025-05-14"];
+  if (interleavedThinking) betaFeatures.push("interleaved-thinking-2025-05-14");
+
+  const defaultHeaders: Record<string, string> = {
+    accept: "application/json",
+    "anthropic-beta": betaFeatures.join(","),
+  };
+
+  return new Anthropic({ apiKey, defaultHeaders });
 }
 
 function sanitizeToolCallId(id: string): string {

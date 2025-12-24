@@ -128,3 +128,27 @@ export type AssistantStreamEvent =
   | { type: "part_end"; index: number; partial: AssistantMessageDraft }
   | { type: "done"; message: AssistantMessage }
   | { type: "error"; error: AssistantMessage };
+
+export type ToolHandler = (
+  args: unknown,
+  call: Extract<AssistantPart, { type: "tool_call" }>,
+) => string | Promise<string>;
+
+export type ToolHandlers = Record<string, ToolHandler>;
+
+export type AgentOptions = StreamOptions & {
+  maxTurns?: number;
+};
+
+export type AgentResult = {
+  messages: Message[];
+  stopReason: StopReason;
+  errorMessage?: string;
+};
+
+export type AgentStreamEvent =
+  | { type: "turn_start"; turn: number }
+  | { type: "assistant_event"; turn: number; event: AssistantStreamEvent }
+  | { type: "tool_result"; turn: number; message: ToolMessage }
+  | { type: "done"; result: AgentResult }
+  | { type: "error"; error: AgentResult };

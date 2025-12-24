@@ -1,3 +1,4 @@
+import { AgentStream } from "./agent-stream.js";
 import type { AssistantStream } from "./assistant-stream.js";
 import type { AnyModel, Model } from "./models.js";
 import { clampReasoningForModel } from "./models.js";
@@ -5,17 +6,21 @@ import { streamAnthropic } from "./providers/anthropic.js";
 import { streamGemini } from "./providers/gemini.js";
 import { streamOpenAI } from "./providers/openai.js";
 import type {
+  AgentOptions,
   AssistantMessage,
   AssistantMessageInput,
   AssistantPart,
   Context,
   JsonSchema,
+  Message,
   NormalizedContext,
   NormalizedMessage,
   Provider,
   ResolvedStreamOptions,
   StreamOptions,
   Tool,
+  ToolHandlers,
+  ToolMessage,
 } from "./types.js";
 import { exhaustive } from "./utils/exhaustive.js";
 
@@ -53,6 +58,158 @@ export function stream(
     default:
       return exhaustive(model);
   }
+}
+
+export function agent(
+  model: AnyModel,
+  context: Context,
+  handlers: ToolHandlers,
+  options: AgentOptions = {},
+): AgentStream {
+  if (options.maxTurns !== undefined) {
+    if (!Number.isInteger(options.maxTurns) || options.maxTurns < 1) {
+      throw new Error("Invalid agent options: maxTurns must be a positive integer");
+    }
+  }
+
+  if (!handlers || typeof handlers !== "object" || Array.isArray(handlers)) {
+    throw new Error("Invalid tool handlers: expected a map of toolName -> handler");
+  }
+
+  const output = new AgentStream();
+
+  const { maxTurns, ...streamOptions } = options;
+
+  type ToolCallPart = Extract<AssistantPart, { type: "tool_call" }>;
+
+  const toolCalls = (message: Pick<AssistantMessage, "content">): ToolCallPart[] =>
+    message.content.filter((p): p is ToolCallPart => p.type === "tool_call");
+
+  const errorToString = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error);
+
+  const toolResultToString = (value: unknown): string => {
+    if (typeof value === "string") return value;
+
+    try {
+      const json = JSON.stringify(value);
+      return json ?? String(value);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const messages: Message[] = [];
+
+  (async () => {
+    for (let turn = 0; ; turn++) {
+      if (maxTurns !== undefined && turn >= maxTurns) {
+        output.push({
+          type: "error",
+          error: {
+            messages,
+            stopReason: "error",
+            errorMessage: "maxTurns exceeded",
+          },
+        });
+        output.end();
+        return;
+      }
+
+      output.push({ type: "turn_start", turn });
+
+      const turnContext: Context = {
+        ...context,
+        messages: [...context.messages, ...messages],
+      };
+
+      const s = stream(model, turnContext, streamOptions);
+      for await (const e of s) {
+        output.push({ type: "assistant_event", turn, event: e });
+      }
+
+      const assistant = await s.result();
+      messages.push(assistant);
+
+      if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
+        output.push({
+          type: "error",
+          error: {
+            messages,
+            stopReason: assistant.stopReason,
+            errorMessage: assistant.errorMessage,
+          },
+        });
+        output.end();
+        return;
+      }
+
+      const calls = toolCalls(assistant);
+      if (calls.length === 0) {
+        output.push({
+          type: "done",
+          result: {
+            messages,
+            stopReason: assistant.stopReason,
+            errorMessage: assistant.errorMessage,
+          },
+        });
+        output.end();
+        return;
+      }
+
+      for (const call of calls) {
+        const handler = handlers[call.name];
+        if (!handler) {
+          output.push({
+            type: "error",
+            error: {
+              messages,
+              stopReason: "error",
+              errorMessage: `Unknown tool: ${call.name}`,
+            },
+          });
+          output.end();
+          return;
+        }
+
+        let content: string;
+        let isError: boolean;
+
+        try {
+          const result = await handler(call.args, call);
+          content = toolResultToString(result);
+          isError = false;
+        } catch (error) {
+          content = errorToString(error);
+          isError = true;
+        }
+
+        const toolMessage: ToolMessage = {
+          role: "tool",
+          toolCallId: call.id,
+          toolName: call.name,
+          content,
+          isError,
+        };
+
+        messages.push(toolMessage);
+        output.push({ type: "tool_result", turn, message: toolMessage });
+      }
+    }
+  })().catch((error) => {
+    output.push({
+      type: "error",
+      error: {
+        messages,
+        stopReason: options.signal?.aborted ? "aborted" : "error",
+        errorMessage: errorToString(error),
+      },
+    });
+    output.end();
+  });
+
+  return output;
 }
 
 export async function complete(

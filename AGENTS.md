@@ -66,6 +66,14 @@ All providers fill `message.usage` and compute `message.usage.cost` via `calcula
 
 - `npm run check` - Format (Biome) + typecheck
 - `npm run build` - Build ESM + CJS to `dist/`
+- `npm test` - Run the local test suite (does not hit real provider APIs)
+- `npm run smoke` - Run real-provider smoke tests (requires API keys)
+
+**Tests**:
+
+- Tests that hit real provider APIs are named `tests/e2e-*.test.ts`.
+- All other tests should be named `tests/*.test.ts` without the `e2e-` prefix.
+- Do not set `temperature` in tests. Rely on provider defaults so behavior matches real-world usage and stays comparable across providers.
 
 **Style**: Biome (2-space indent, 100 line width). Types `PascalCase`, values/functions `camelCase`, files `lowercase.ts`.
 

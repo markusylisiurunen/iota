@@ -2,6 +2,8 @@ export type Provider = "openai" | "anthropic" | "gemini";
 
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export type ServiceTier = "flex" | "standard" | "priority";
+
 export type StopReason = "stop" | "length" | "tool_use" | "error" | "aborted";
 
 export type Usage = {
@@ -112,6 +114,7 @@ export type StreamOptions = {
   temperature?: number;
   maxTokens?: number;
   reasoning?: ReasoningEffort;
+  serviceTier?: ServiceTier;
   signal?: AbortSignal;
 };
 
@@ -132,7 +135,7 @@ export type AssistantStreamEvent =
 export type ToolHandler = (
   args: unknown,
   call: Extract<AssistantPart, { type: "tool_call" }>,
-) => string | Promise<string>;
+) => unknown | Promise<unknown>;
 
 export type ToolHandlers = Record<string, ToolHandler>;
 

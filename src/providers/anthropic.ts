@@ -1,8 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+  StopReason as AnthropicStopReason,
+  Tool as AnthropicTool,
   ContentBlockParam,
   MessageCreateParamsStreaming,
   MessageParam,
+  TextBlockParam,
 } from "@anthropic-ai/sdk/resources/messages.js";
 import type { AssistantStream } from "../assistant-stream.js";
 import type { AnyModel } from "../models.js";
@@ -23,8 +26,6 @@ import { sanitizeSurrogates } from "../utils/sanitize.js";
 type AnthropicModel = Extract<AnyModel, { provider: "anthropic" }>;
 
 type AnthropicToolCallPart = Extract<AssistantPart, { type: "tool_call" }>;
-
-type AnthropicPart = AssistantPart;
 
 export function streamAnthropic(
   model: AnthropicModel,
@@ -49,87 +50,150 @@ export function streamAnthropic(
       });
 
       for await (const event of anthropicStream) {
-        if (event.type === "message_start") {
-          ctrl.setUsage(
-            usageFromAnthropic({
-              inputTokens: event.message.usage.input_tokens || 0,
-              outputTokens: event.message.usage.output_tokens || 0,
-              cacheReadTokens: event.message.usage.cache_read_input_tokens || 0,
-              cacheWriteTokens: event.message.usage.cache_creation_input_tokens || 0,
-            }),
-          );
-        } else if (event.type === "content_block_start") {
-          if (event.content_block.type === "text") {
-            const part: AnthropicPart = { type: "text", text: "" };
-            const idx = ctrl.addPart(part);
-            contentIndexByBlockIndex.set(event.index, idx);
-          } else if (event.content_block.type === "thinking") {
-            const part: AnthropicPart = { type: "thinking", text: "" };
-            const idx = ctrl.addPart(part);
-            contentIndexByBlockIndex.set(event.index, idx);
-          } else if (event.content_block.type === "tool_use") {
-            const part: AnthropicToolCallPart = {
-              type: "tool_call",
-              id: event.content_block.id,
-              name: event.content_block.name,
-              args: {},
-            };
-            const idx = ctrl.addPart(part);
-            contentIndexByBlockIndex.set(event.index, idx);
-            toolCallPartialJsonByIndex.set(idx, "");
+        switch (event.type) {
+          case "message_start": {
+            ctrl.setUsage(
+              usageFromAnthropic({
+                inputTokens: event.message.usage.input_tokens || 0,
+                outputTokens: event.message.usage.output_tokens || 0,
+                cacheReadTokens: event.message.usage.cache_read_input_tokens || 0,
+                cacheWriteTokens: event.message.usage.cache_creation_input_tokens || 0,
+              }),
+            );
+            continue;
           }
-        } else if (event.type === "content_block_delta") {
-          const idx = contentIndexByBlockIndex.get(event.index);
-          if (idx === undefined) continue;
 
-          const part = output.content[idx] as AnthropicPart | undefined;
-          if (!part) continue;
+          case "content_block_start": {
+            const block = event.content_block;
 
-          if (event.delta.type === "text_delta" && part.type === "text") {
-            part.text += event.delta.text;
-            ctrl.delta(idx, event.delta.text);
-          } else if (event.delta.type === "thinking_delta" && part.type === "thinking") {
-            part.text += event.delta.thinking;
-            ctrl.delta(idx, event.delta.thinking);
-          } else if (event.delta.type === "input_json_delta" && part.type === "tool_call") {
-            const current = toolCallPartialJsonByIndex.get(idx) ?? "";
-            const next = current + event.delta.partial_json;
-            toolCallPartialJsonByIndex.set(idx, next);
+            switch (block.type) {
+              case "text": {
+                const idx = ctrl.addPart({ type: "text", text: "" });
+                contentIndexByBlockIndex.set(event.index, idx);
+                continue;
+              }
 
-            ctrl.delta(idx, event.delta.partial_json);
-          } else if (event.delta.type === "signature_delta" && part.type === "thinking") {
-            const current = thinkingSignatureByIndex.get(idx) ?? "";
-            const next = current + event.delta.signature;
-            thinkingSignatureByIndex.set(idx, next);
+              case "thinking": {
+                const idx = ctrl.addPart({ type: "thinking", text: "" });
+                contentIndexByBlockIndex.set(event.index, idx);
+                continue;
+              }
 
-            part.meta = { provider: "anthropic", type: "thinking_signature", signature: next };
-          }
-        } else if (event.type === "content_block_stop") {
-          const idx = contentIndexByBlockIndex.get(event.index);
-          if (idx === undefined) continue;
+              case "tool_use": {
+                const part: AnthropicToolCallPart = {
+                  type: "tool_call",
+                  id: block.id,
+                  name: block.name,
+                  args: {},
+                };
+                const idx = ctrl.addPart(part);
+                contentIndexByBlockIndex.set(event.index, idx);
+                toolCallPartialJsonByIndex.set(idx, "");
+                continue;
+              }
 
-          const part = output.content[idx] as AnthropicPart | undefined;
-          if (!part) continue;
+              case "redacted_thinking":
+              case "server_tool_use":
+              case "web_search_tool_result":
+                continue;
 
-          if (part.type === "tool_call") {
-            const json = toolCallPartialJsonByIndex.get(idx);
-            if (json !== undefined) {
-              part.args = parseStreamingJson(json);
-              toolCallPartialJsonByIndex.delete(idx);
+              default:
+                return exhaustive(block);
             }
           }
 
-          ctrl.endPart(idx);
-        } else if (event.type === "message_delta") {
-          if (event.delta.stop_reason) ctrl.setStopReason(mapStopReason(event.delta.stop_reason));
-          ctrl.setUsage(
-            usageFromAnthropic({
-              inputTokens: event.usage.input_tokens || 0,
-              outputTokens: event.usage.output_tokens || 0,
-              cacheReadTokens: event.usage.cache_read_input_tokens || 0,
-              cacheWriteTokens: event.usage.cache_creation_input_tokens || 0,
-            }),
-          );
+          case "content_block_delta": {
+            const idx = contentIndexByBlockIndex.get(event.index);
+            if (idx === undefined) continue;
+
+            const part = output.content[idx];
+            if (!part) continue;
+
+            switch (event.delta.type) {
+              case "text_delta": {
+                if (part.type !== "text") continue;
+                part.text += event.delta.text;
+                ctrl.delta(idx, event.delta.text);
+                continue;
+              }
+
+              case "thinking_delta": {
+                if (part.type !== "thinking") continue;
+                part.text += event.delta.thinking;
+                ctrl.delta(idx, event.delta.thinking);
+                continue;
+              }
+
+              case "input_json_delta": {
+                if (part.type !== "tool_call") continue;
+
+                const current = toolCallPartialJsonByIndex.get(idx) ?? "";
+                const next = current + event.delta.partial_json;
+                toolCallPartialJsonByIndex.set(idx, next);
+
+                ctrl.delta(idx, event.delta.partial_json);
+                continue;
+              }
+
+              case "signature_delta": {
+                if (part.type !== "thinking") continue;
+
+                const current = thinkingSignatureByIndex.get(idx) ?? "";
+                const next = current + event.delta.signature;
+                thinkingSignatureByIndex.set(idx, next);
+
+                part.meta = { provider: "anthropic", type: "thinking_signature", signature: next };
+                continue;
+              }
+
+              case "citations_delta":
+                continue;
+
+              default:
+                return exhaustive(event.delta);
+            }
+          }
+
+          case "content_block_stop": {
+            const idx = contentIndexByBlockIndex.get(event.index);
+            if (idx === undefined) continue;
+
+            const part = output.content[idx];
+            if (!part) continue;
+
+            if (part.type === "tool_call") {
+              const json = toolCallPartialJsonByIndex.get(idx);
+              if (json !== undefined) {
+                part.args = parseStreamingJson(json);
+                toolCallPartialJsonByIndex.delete(idx);
+              }
+            }
+
+            ctrl.endPart(idx);
+            continue;
+          }
+
+          case "message_delta": {
+            if (event.delta.stop_reason) {
+              ctrl.setStopReason(mapStopReason(event.delta.stop_reason));
+            }
+
+            ctrl.setUsage(
+              usageFromAnthropic({
+                inputTokens: event.usage.input_tokens || 0,
+                outputTokens: event.usage.output_tokens || 0,
+                cacheReadTokens: event.usage.cache_read_input_tokens || 0,
+                cacheWriteTokens: event.usage.cache_creation_input_tokens || 0,
+              }),
+            );
+            continue;
+          }
+
+          case "message_stop":
+            continue;
+
+          default:
+            return exhaustive(event);
         }
       }
 
@@ -167,8 +231,8 @@ function buildParams(
         type: "text",
         text: sanitizeSurrogates(context.system),
         cache_control: { type: "ephemeral" },
-      } as any,
-    ];
+      },
+    ] satisfies TextBlockParam[];
   }
 
   if (options.temperature !== undefined) {
@@ -194,76 +258,102 @@ function convertMessages(context: NormalizedContext): MessageParam[] {
   const out: MessageParam[] = [];
 
   for (const msg of context.messages) {
-    if (msg.role === "user") {
-      if (msg.content.trim().length > 0)
-        out.push({ role: "user", content: sanitizeSurrogates(msg.content) });
-      continue;
-    }
-
-    if (msg.role === "assistant") {
-      const blocks: ContentBlockParam[] = [];
-      for (const part of msg.content) {
-        if (part.type === "text") {
-          if (part.text.trim().length === 0) continue;
-          blocks.push({ type: "text", text: sanitizeSurrogates(part.text) });
-        } else if (part.type === "thinking") {
-          if (part.text.trim().length === 0) continue;
-          if (part.meta?.provider !== "anthropic" || part.meta.type !== "thinking_signature")
-            continue;
-          if (part.meta.signature.trim().length === 0) continue;
-
-          blocks.push({
-            type: "thinking",
-            thinking: sanitizeSurrogates(part.text),
-            signature: part.meta.signature,
-          });
-        } else if (part.type === "tool_call") {
-          blocks.push({
-            type: "tool_use",
-            id: sanitizeToolCallId(part.id),
-            name: part.name,
-            input: part.args,
-          });
+    switch (msg.role) {
+      case "user": {
+        if (msg.content.trim().length > 0) {
+          out.push({ role: "user", content: sanitizeSurrogates(msg.content) });
         }
+        continue;
       }
-      if (blocks.length > 0) out.push({ role: "assistant", content: blocks });
-      continue;
-    }
 
-    if (msg.role === "tool") {
-      out.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: sanitizeToolCallId(msg.toolCallId),
-            content: sanitizeSurrogates(msg.content),
-            is_error: msg.isError,
-          },
-        ],
-      });
+      case "assistant": {
+        const blocks: ContentBlockParam[] = [];
+        for (const part of msg.content) {
+          switch (part.type) {
+            case "text": {
+              if (part.text.trim().length === 0) continue;
+              blocks.push({ type: "text", text: sanitizeSurrogates(part.text) });
+              continue;
+            }
+
+            case "thinking": {
+              if (part.text.trim().length === 0) continue;
+              if (part.meta?.provider !== "anthropic" || part.meta.type !== "thinking_signature") {
+                continue;
+              }
+              if (part.meta.signature.trim().length === 0) continue;
+
+              blocks.push({
+                type: "thinking",
+                thinking: sanitizeSurrogates(part.text),
+                signature: part.meta.signature,
+              });
+              continue;
+            }
+
+            case "tool_call": {
+              blocks.push({
+                type: "tool_use",
+                id: sanitizeToolCallId(part.id),
+                name: part.name,
+                input: part.args,
+              });
+              continue;
+            }
+
+            default:
+              return exhaustive(part);
+          }
+        }
+
+        if (blocks.length > 0) out.push({ role: "assistant", content: blocks });
+        continue;
+      }
+
+      case "tool": {
+        out.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: sanitizeToolCallId(msg.toolCallId),
+              content: sanitizeSurrogates(msg.content),
+              is_error: msg.isError,
+            },
+          ],
+        });
+        continue;
+      }
+
+      default:
+        return exhaustive(msg);
     }
   }
 
   const lastMessage = out.at(-1);
   if (lastMessage?.role === "user" && Array.isArray(lastMessage.content)) {
-    const lastBlock = lastMessage.content.at(-1) as any;
-    if (
-      lastBlock &&
-      (lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
-    ) {
-      lastBlock.cache_control = { type: "ephemeral" };
+    const lastBlock = lastMessage.content.at(-1);
+    if (!lastBlock) return out;
+
+    switch (lastBlock.type) {
+      case "text":
+      case "image":
+      case "tool_result":
+        lastBlock.cache_control = { type: "ephemeral" };
+        break;
+      default:
+        break;
     }
   }
 
   return out;
 }
 
-function convertTools(tools: Tool[]) {
+function convertTools(tools: Tool[]): AnthropicTool[] {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    input_schema: tool.parameters as any,
+    input_schema: tool.parameters as AnthropicTool.InputSchema,
   }));
 }
 
@@ -323,7 +413,7 @@ function anthropicBudget(effort: Exclude<ReasoningEffort, "none">, maxTokens?: n
   }
 }
 
-function mapStopReason(reason: string): StopReason {
+function mapStopReason(reason: AnthropicStopReason): StopReason {
   switch (reason) {
     case "end_turn":
       return "stop";
@@ -332,9 +422,11 @@ function mapStopReason(reason: string): StopReason {
     case "tool_use":
       return "tool_use";
     case "stop_sequence":
+    case "pause_turn":
+    case "refusal":
       return "stop";
     default:
-      return "error";
+      return exhaustive(reason);
   }
 }
 

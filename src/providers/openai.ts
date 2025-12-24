@@ -15,6 +15,7 @@ import type {
   NormalizedContext,
   ReasoningEffort,
   ResolvedStreamOptions,
+  ServiceTier,
   StopReason,
   Tool,
   Usage,
@@ -72,44 +73,66 @@ export function streamOpenAI(
           const item = event.item;
           const itemId = item.id ?? `output_${event.output_index}`;
 
-          if (item.type === "reasoning") {
-            if ((options.reasoning ?? "none") === "none") {
-              ignoredItemIds.add(itemId);
+          switch (item.type) {
+            case "reasoning": {
+              if ((options.reasoning ?? "none") === "none") {
+                ignoredItemIds.add(itemId);
+                return;
+              }
+
+              const part: OpenAIThinkingPart = { type: "thinking", text: "" };
+              const idx = ctrl.addPart(part);
+              partIndexByItemId.set(itemId, idx);
               return;
             }
 
-            const part: OpenAIThinkingPart = { type: "thinking", text: "" };
-            const idx = ctrl.addPart(part);
-            partIndexByItemId.set(itemId, idx);
-            return;
-          }
-
-          if (item.type === "message") {
-            const part: OpenAITextPart = { type: "text", text: "" };
-            const idx = ctrl.addPart(part);
-            partIndexByItemId.set(itemId, idx);
-            return;
-          }
-
-          if (item.type === "function_call") {
-            const part: OpenAIToolCallPart = {
-              type: "tool_call",
-              id: item.call_id,
-              name: item.name,
-              args: {},
-            };
-
-            if (item.id) {
-              part.meta = { provider: "openai", type: "function_call_item_id", id: item.id };
+            case "message": {
+              const part: OpenAITextPart = { type: "text", text: "" };
+              const idx = ctrl.addPart(part);
+              partIndexByItemId.set(itemId, idx);
+              return;
             }
 
-            const idx = ctrl.addPart(part);
-            partIndexByItemId.set(itemId, idx);
+            case "function_call": {
+              const part: OpenAIToolCallPart = {
+                type: "tool_call",
+                id: item.call_id,
+                name: item.name,
+                args: {},
+              };
 
-            const initial = item.arguments || "";
-            toolCallArgsJsonByIndex.set(idx, initial);
+              if (item.id) {
+                part.meta = { provider: "openai", type: "function_call_item_id", id: item.id };
+              }
 
-            return;
+              const idx = ctrl.addPart(part);
+              partIndexByItemId.set(itemId, idx);
+
+              const initial = item.arguments || "";
+              toolCallArgsJsonByIndex.set(idx, initial);
+
+              return;
+            }
+
+            case "apply_patch_call":
+            case "apply_patch_call_output":
+            case "code_interpreter_call":
+            case "compaction":
+            case "computer_call":
+            case "custom_tool_call":
+            case "file_search_call":
+            case "image_generation_call":
+            case "local_shell_call":
+            case "mcp_approval_request":
+            case "mcp_call":
+            case "mcp_list_tools":
+            case "shell_call":
+            case "shell_call_output":
+            case "web_search_call":
+              return;
+
+            default:
+              exhaustive(item);
           }
 
           return;
@@ -194,31 +217,69 @@ export function streamOpenAI(
           const part = output.content[idx];
           if (!part) return;
 
-          if (item.type === "reasoning" && part.type === "thinking") {
-            part.meta = { provider: "openai", type: "reasoning_item", item };
-            ctrl.endPart(idx);
-            return;
-          }
+          switch (item.type) {
+            case "reasoning": {
+              if (part.type !== "thinking") {
+                ctrl.endPart(idx);
+                return;
+              }
 
-          if (item.type === "message" && part.type === "text") {
-            part.meta = { provider: "openai", type: "message_id", id: item.id };
-            ctrl.endPart(idx);
-            return;
-          }
-
-          if (item.type === "function_call" && part.type === "tool_call") {
-            if (item.id) {
-              part.meta = { provider: "openai", type: "function_call_item_id", id: item.id };
+              part.meta = { provider: "openai", type: "reasoning_item", item };
+              ctrl.endPart(idx);
+              return;
             }
 
-            part.args = parseFinalToolArgs(item);
-            toolCallArgsJsonByIndex.delete(idx);
+            case "message": {
+              if (part.type !== "text") {
+                ctrl.endPart(idx);
+                return;
+              }
 
-            ctrl.endPart(idx);
-            return;
+              part.meta = { provider: "openai", type: "message_id", id: item.id };
+              ctrl.endPart(idx);
+              return;
+            }
+
+            case "function_call": {
+              if (part.type !== "tool_call") {
+                ctrl.endPart(idx);
+                return;
+              }
+
+              if (item.id) {
+                part.meta = { provider: "openai", type: "function_call_item_id", id: item.id };
+              }
+
+              part.args = parseFinalToolArgs(item);
+              toolCallArgsJsonByIndex.delete(idx);
+
+              ctrl.endPart(idx);
+              return;
+            }
+
+            case "apply_patch_call":
+            case "apply_patch_call_output":
+            case "code_interpreter_call":
+            case "compaction":
+            case "computer_call":
+            case "custom_tool_call":
+            case "file_search_call":
+            case "image_generation_call":
+            case "local_shell_call":
+            case "mcp_approval_request":
+            case "mcp_call":
+            case "mcp_list_tools":
+            case "shell_call":
+            case "shell_call_output":
+            case "web_search_call": {
+              ctrl.endPart(idx);
+              return;
+            }
+
+            default:
+              exhaustive(item);
           }
 
-          ctrl.endPart(idx);
           return;
         }
 
@@ -248,8 +309,53 @@ export function streamOpenAI(
           throw new Error("OpenAI request failed");
         }
 
-        default:
+        case "response.audio.delta":
+        case "response.audio.done":
+        case "response.audio.transcript.delta":
+        case "response.audio.transcript.done":
+        case "response.code_interpreter_call_code.delta":
+        case "response.code_interpreter_call_code.done":
+        case "response.code_interpreter_call.completed":
+        case "response.code_interpreter_call.in_progress":
+        case "response.code_interpreter_call.interpreting":
+        case "response.content_part.added":
+        case "response.content_part.done":
+        case "response.created":
+        case "response.file_search_call.completed":
+        case "response.file_search_call.in_progress":
+        case "response.file_search_call.searching":
+        case "response.function_call_arguments.done":
+        case "response.image_generation_call.completed":
+        case "response.image_generation_call.generating":
+        case "response.image_generation_call.in_progress":
+        case "response.image_generation_call.partial_image":
+        case "response.in_progress":
+        case "response.incomplete":
+        case "response.mcp_call.completed":
+        case "response.mcp_call.failed":
+        case "response.mcp_call.in_progress":
+        case "response.mcp_call_arguments.delta":
+        case "response.mcp_call_arguments.done":
+        case "response.mcp_list_tools.completed":
+        case "response.mcp_list_tools.failed":
+        case "response.mcp_list_tools.in_progress":
+        case "response.output_text.annotation.added":
+        case "response.output_text.done":
+        case "response.queued":
+        case "response.reasoning_summary_part.added":
+        case "response.reasoning_summary_text.done":
+        case "response.reasoning_text.delta":
+        case "response.reasoning_text.done":
+        case "response.refusal.done":
+        case "response.web_search_call.completed":
+        case "response.web_search_call.in_progress":
+        case "response.web_search_call.searching":
+        case "response.custom_tool_call_input.delta":
+        case "response.custom_tool_call_input.done":
           return;
+
+        default:
+          exhaustive(event);
       }
     }
   })();
@@ -289,6 +395,10 @@ function buildParams(
     params.temperature = options.temperature;
   }
 
+  if (options.serviceTier !== undefined) {
+    params.service_tier = mapServiceTier(options.serviceTier);
+  }
+
   if (context.tools && context.tools.length > 0) {
     params.tools = convertTools(context.tools);
   }
@@ -313,69 +423,81 @@ function convertMessages(context: NormalizedContext): ResponseInput {
 
   let msgIndex = 0;
   for (const msg of context.messages) {
-    if (msg.role === "user") {
-      if (msg.content.trim().length > 0) {
-        input.push({
-          role: "user",
-          content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
-        });
-      }
-      continue;
-    }
-
-    if (msg.role === "assistant") {
-      for (const part of msg.content) {
-        if (part.type === "thinking") {
-          if (part.meta?.provider === "openai" && part.meta.type === "reasoning_item") {
-            input.push(part.meta.item as ResponseReasoningItem);
-          }
-          continue;
-        }
-
-        if (part.type === "text") {
-          if (part.text.trim().length === 0) continue;
-
-          const id =
-            part.meta?.provider === "openai" && part.meta.type === "message_id"
-              ? part.meta.id
-              : `msg_${msgIndex++}`;
-
+    switch (msg.role) {
+      case "user": {
+        if (msg.content.trim().length > 0) {
           input.push({
-            type: "message",
-            role: "assistant",
-            content: [
-              { type: "output_text", text: sanitizeSurrogates(part.text), annotations: [] },
-            ],
-            status: "completed",
-            id,
-          } satisfies ResponseOutputMessage);
-          continue;
-        }
-
-        if (part.type === "tool_call") {
-          const id =
-            part.meta?.provider === "openai" && part.meta.type === "function_call_item_id"
-              ? part.meta.id
-              : `fc_${msgIndex++}`;
-
-          input.push({
-            type: "function_call",
-            id,
-            call_id: part.id,
-            name: part.name,
-            arguments: JSON.stringify(part.args),
+            role: "user",
+            content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
           });
         }
+        continue;
       }
-      continue;
-    }
 
-    if (msg.role === "tool") {
-      input.push({
-        type: "function_call_output",
-        call_id: msg.toolCallId,
-        output: sanitizeSurrogates(msg.content),
-      });
+      case "assistant": {
+        for (const part of msg.content) {
+          switch (part.type) {
+            case "thinking": {
+              if (part.meta?.provider === "openai" && part.meta.type === "reasoning_item") {
+                input.push(part.meta.item as ResponseReasoningItem);
+              }
+              continue;
+            }
+
+            case "text": {
+              if (part.text.trim().length === 0) continue;
+
+              const id =
+                part.meta?.provider === "openai" && part.meta.type === "message_id"
+                  ? part.meta.id
+                  : `msg_${msgIndex++}`;
+
+              input.push({
+                type: "message",
+                role: "assistant",
+                content: [
+                  { type: "output_text", text: sanitizeSurrogates(part.text), annotations: [] },
+                ],
+                status: "completed",
+                id,
+              } satisfies ResponseOutputMessage);
+              continue;
+            }
+
+            case "tool_call": {
+              const id =
+                part.meta?.provider === "openai" && part.meta.type === "function_call_item_id"
+                  ? part.meta.id
+                  : `fc_${msgIndex++}`;
+
+              input.push({
+                type: "function_call",
+                id,
+                call_id: part.id,
+                name: part.name,
+                arguments: JSON.stringify(part.args),
+              });
+              continue;
+            }
+
+            default:
+              return exhaustive(part);
+          }
+        }
+        continue;
+      }
+
+      case "tool": {
+        input.push({
+          type: "function_call_output",
+          call_id: msg.toolCallId,
+          output: sanitizeSurrogates(msg.content),
+        });
+        continue;
+      }
+
+      default:
+        return exhaustive(msg);
     }
   }
 
@@ -390,6 +512,19 @@ function convertTools(tools: Tool[]) {
     parameters: tool.parameters as Record<string, unknown>,
     strict: null,
   }));
+}
+
+function mapServiceTier(tier: ServiceTier): "flex" | "default" | "priority" {
+  switch (tier) {
+    case "flex":
+      return "flex";
+    case "standard":
+      return "default";
+    case "priority":
+      return "priority";
+    default:
+      return exhaustive(tier);
+  }
 }
 
 function mapReasoningEffort(effort: ReasoningEffort): Exclude<ReasoningEffort, "none" | "xhigh"> {

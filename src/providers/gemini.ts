@@ -196,69 +196,86 @@ function convertMessages(context: NormalizedContext): Content[] {
   const contents: Content[] = [];
 
   for (const msg of context.messages) {
-    if (msg.role === "user") {
-      if (msg.content.trim().length === 0) continue;
-      contents.push({
-        role: "user",
-        parts: [{ text: sanitizeSurrogates(msg.content) }],
-      });
-      continue;
-    }
+    switch (msg.role) {
+      case "user": {
+        if (msg.content.trim().length === 0) continue;
+        contents.push({
+          role: "user",
+          parts: [{ text: sanitizeSurrogates(msg.content) }],
+        });
+        continue;
+      }
 
-    if (msg.role === "assistant") {
-      const outParts: Part[] = [];
-      for (const part of msg.content) {
-        if (part.type === "text") {
-          if (part.text.trim().length === 0) continue;
-          outParts.push({ text: sanitizeSurrogates(part.text) });
-        } else if (part.type === "thinking") {
-          if (part.meta?.provider === "gemini" && part.meta.type === "thought_signature") {
-            if (part.text.trim().length > 0) {
+      case "assistant": {
+        const outParts: Part[] = [];
+        for (const part of msg.content) {
+          switch (part.type) {
+            case "text": {
+              if (part.text.trim().length === 0) continue;
+              outParts.push({ text: sanitizeSurrogates(part.text) });
+              continue;
+            }
+
+            case "thinking": {
+              if (part.text.trim().length === 0) continue;
+              if (part.meta?.provider !== "gemini" || part.meta.type !== "thought_signature") {
+                continue;
+              }
+
               outParts.push({
                 thought: true,
                 text: sanitizeSurrogates(part.text),
                 thoughtSignature: part.meta.signature,
               });
+              continue;
             }
-          } else if (part.text.trim().length > 0) {
-            outParts.push({ text: `<thinking>\n${sanitizeSurrogates(part.text)}\n</thinking>` });
-          }
-        } else if (part.type === "tool_call") {
-          const p: Part = {
-            functionCall: {
-              id: part.id,
-              name: part.name,
-              args: asRecord(part.args),
-            },
-          };
 
-          if (part.meta?.provider === "gemini" && part.meta.type === "thought_signature") {
-            p.thoughtSignature = part.meta.signature;
-          }
+            case "tool_call": {
+              const p: Part = {
+                functionCall: {
+                  id: part.id,
+                  name: part.name,
+                  args: asRecord(part.args),
+                },
+              };
 
-          outParts.push(p);
+              if (part.meta?.provider === "gemini" && part.meta.type === "thought_signature") {
+                p.thoughtSignature = part.meta.signature;
+              }
+
+              outParts.push(p);
+              continue;
+            }
+
+            default:
+              return exhaustive(part);
+          }
         }
+
+        if (outParts.length > 0) contents.push({ role: "model", parts: outParts });
+        continue;
       }
 
-      if (outParts.length > 0) contents.push({ role: "model", parts: outParts });
-      continue;
-    }
-
-    if (msg.role === "tool") {
-      contents.push({
-        role: "user",
-        parts: [
-          {
-            functionResponse: {
-              id: msg.toolCallId,
-              name: msg.toolName,
-              response: msg.isError
-                ? { error: sanitizeSurrogates(msg.content) }
-                : { output: sanitizeSurrogates(msg.content) },
+      case "tool": {
+        contents.push({
+          role: "user",
+          parts: [
+            {
+              functionResponse: {
+                id: msg.toolCallId,
+                name: msg.toolName,
+                response: msg.isError
+                  ? { error: sanitizeSurrogates(msg.content) }
+                  : { output: sanitizeSurrogates(msg.content) },
+              },
             },
-          },
-        ],
-      });
+          ],
+        });
+        continue;
+      }
+
+      default:
+        return exhaustive(msg);
     }
   }
 

@@ -257,20 +257,20 @@ export function normalizeContextForTarget(target: Model, context: Context): Norm
 
   const messages: NormalizedMessage[] = [];
   for (const msg of context.messages) {
-    if (msg.role === "system") continue;
-
-    if (msg.role === "user") {
-      messages.push(msg);
-      continue;
-    }
-
-    if (msg.role === "assistant") {
-      messages.push(normalizeAssistantMessage(targetProvider, targetModel, msg));
-      continue;
-    }
-
-    if (msg.role === "tool") {
-      messages.push({ ...msg, isError: msg.isError ?? false });
+    switch (msg.role) {
+      case "system":
+        continue;
+      case "user":
+        messages.push(msg);
+        continue;
+      case "assistant":
+        messages.push(normalizeAssistantMessage(targetProvider, targetModel, msg));
+        continue;
+      case "tool":
+        messages.push({ ...msg, isError: msg.isError ?? false });
+        continue;
+      default:
+        return exhaustive(msg);
     }
   }
 
@@ -301,15 +301,17 @@ function normalizeAssistantMessage(
 
   const content: AssistantPart[] = [];
   for (const part of parts) {
-    if (part.type === "text") {
-      content.push({ type: "text", text: part.text, ...(part.meta ? { meta: part.meta } : {}) });
-      continue;
-    }
-    if (part.type === "thinking") {
-      continue;
-    }
-    if (part.type === "tool_call") {
-      content.push({ ...part, args: part.args });
+    switch (part.type) {
+      case "text":
+        content.push({ type: "text", text: part.text, ...(part.meta ? { meta: part.meta } : {}) });
+        continue;
+      case "thinking":
+        continue;
+      case "tool_call":
+        content.push({ ...part, args: part.args });
+        continue;
+      default:
+        return exhaustive(part);
     }
   }
 
@@ -502,6 +504,11 @@ function validateJsonSchema(schema: JsonSchema, path: string, isRoot: boolean): 
   }
 
   if (schema.additionalProperties !== undefined) {
+    if (schema.type !== "object") {
+      throw new Error(
+        `Invalid tool JSON Schema at ${path}.additionalProperties: only valid when type is 'object'`,
+      );
+    }
     if (typeof schema.additionalProperties !== "boolean") {
       throw new Error(`Invalid tool JSON Schema at ${path}.additionalProperties: expected boolean`);
     }

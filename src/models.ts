@@ -1,4 +1,4 @@
-import type { Provider, ReasoningEffort, Usage } from "./types.js";
+import type { Provider, ReasoningEffort, ServiceTier, Usage } from "./types.js";
 import { exhaustive } from "./utils/exhaustive.js";
 
 export type Pricing = {
@@ -25,14 +25,38 @@ export type Model<P extends Provider = Provider> = {
 export function calculateCost(
   model: Model,
   usage: Pick<Usage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">,
+  serviceTier?: ServiceTier,
 ): Usage["cost"] {
-  const input = (model.pricing.inputPer1M / 1_000_000) * usage.inputTokens;
-  const output = (model.pricing.outputPer1M / 1_000_000) * usage.outputTokens;
-  const cacheRead = (model.pricing.cacheReadPer1M / 1_000_000) * usage.cacheReadTokens;
-  const cacheWrite = (model.pricing.cacheWritePer1M / 1_000_000) * usage.cacheWriteTokens;
+  const inputBase = (model.pricing.inputPer1M / 1_000_000) * usage.inputTokens;
+  const outputBase = (model.pricing.outputPer1M / 1_000_000) * usage.outputTokens;
+  const cacheReadBase = (model.pricing.cacheReadPer1M / 1_000_000) * usage.cacheReadTokens;
+  const cacheWriteBase = (model.pricing.cacheWritePer1M / 1_000_000) * usage.cacheWriteTokens;
+
+  const multiplier = openaiServiceTierCostMultiplier(model.provider, serviceTier);
+
+  const input = inputBase * multiplier;
+  const output = outputBase * multiplier;
+  const cacheRead = cacheReadBase * multiplier;
+  const cacheWrite = cacheWriteBase * multiplier;
   const total = input + output + cacheRead + cacheWrite;
 
   return { input, output, cacheRead, cacheWrite, total };
+}
+
+function openaiServiceTierCostMultiplier(provider: Provider, tier?: ServiceTier): number {
+  if (provider !== "openai") return 1;
+
+  switch (tier) {
+    case undefined:
+    case "standard":
+      return 1;
+    case "flex":
+      return 0.5;
+    case "priority":
+      return 2;
+    default:
+      return exhaustive(tier);
+  }
 }
 
 const gpt52 = {

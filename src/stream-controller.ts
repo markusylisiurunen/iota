@@ -51,7 +51,7 @@ export class StreamController {
   setUsage(usage: Usage): void {
     this.output.usage = {
       ...usage,
-      cost: calculateCost(this.model, usage),
+      cost: calculateCost(this.model, usage, this.options.serviceTier),
     };
   }
 
@@ -68,7 +68,7 @@ export class StreamController {
     this.output.usage = this.output.usage ?? emptyUsage();
     this.output.usage = {
       ...this.output.usage,
-      cost: calculateCost(this.model, this.output.usage),
+      cost: calculateCost(this.model, this.output.usage, this.options.serviceTier),
     };
 
     this.output.stopReason = this.output.stopReason ?? "stop";

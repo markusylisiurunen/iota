@@ -32,7 +32,7 @@ export class EventStream<TEvent, TResult = TEvent> implements AsyncIterable<TEve
     if (result !== undefined) this.resolveFinalResult(result);
 
     while (this.waiting.length > 0) {
-      this.waiting.shift()!({ value: undefined as any, done: true });
+      this.waiting.shift()!({ value: undefined as unknown as TEvent, done: true });
     }
   }
 

@@ -1,4 +1,5 @@
-import type { Provider, Usage } from "./types.js";
+import type { Provider, ReasoningEffort, Usage } from "./types.js";
+import { exhaustive } from "./utils/exhaustive.js";
 
 export type Pricing = {
   inputPer1M: number;
@@ -11,34 +12,36 @@ export type Model<P extends Provider = Provider> = {
   provider: P;
   id: string;
   name: string;
-  baseUrl: string;
   contextWindow: number;
   maxOutputTokens: number;
   supports: {
     reasoning: boolean;
     tools: boolean;
+    reasoningXhigh: boolean;
   };
   pricing: Pricing;
 };
 
-export function calculateCost(model: Model, usage: Usage): Usage["cost"] {
-  usage.cost.input = (model.pricing.inputPer1M / 1_000_000) * usage.inputTokens;
-  usage.cost.output = (model.pricing.outputPer1M / 1_000_000) * usage.outputTokens;
-  usage.cost.cacheRead = (model.pricing.cacheReadPer1M / 1_000_000) * usage.cacheReadTokens;
-  usage.cost.cacheWrite = (model.pricing.cacheWritePer1M / 1_000_000) * usage.cacheWriteTokens;
-  usage.cost.total =
-    usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
-  return usage.cost;
+export function calculateCost(
+  model: Model,
+  usage: Pick<Usage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">,
+): Usage["cost"] {
+  const input = (model.pricing.inputPer1M / 1_000_000) * usage.inputTokens;
+  const output = (model.pricing.outputPer1M / 1_000_000) * usage.outputTokens;
+  const cacheRead = (model.pricing.cacheReadPer1M / 1_000_000) * usage.cacheReadTokens;
+  const cacheWrite = (model.pricing.cacheWritePer1M / 1_000_000) * usage.cacheWriteTokens;
+  const total = input + output + cacheRead + cacheWrite;
+
+  return { input, output, cacheRead, cacheWrite, total };
 }
 
 const gpt52 = {
   provider: "openai",
   id: "gpt-5.2",
   name: "GPT-5.2",
-  baseUrl: "https://api.openai.com/v1",
   contextWindow: 128000,
   maxOutputTokens: 16384,
-  supports: { reasoning: true, tools: true },
+  supports: { reasoning: true, tools: true, reasoningXhigh: false },
   pricing: {
     inputPer1M: 1.75,
     outputPer1M: 14,
@@ -59,10 +62,9 @@ export const anthropicModels = {
     provider: "anthropic",
     id: "claude-opus-4-5",
     name: "Claude Opus 4.5 (latest)",
-    baseUrl: "https://api.anthropic.com",
     contextWindow: 200000,
     maxOutputTokens: 64000,
-    supports: { reasoning: true, tools: true },
+    supports: { reasoning: true, tools: true, reasoningXhigh: true },
     pricing: {
       inputPer1M: 5,
       outputPer1M: 25,
@@ -74,10 +76,9 @@ export const anthropicModels = {
     provider: "anthropic",
     id: "claude-haiku-4-5",
     name: "Claude Haiku 4.5 (latest)",
-    baseUrl: "https://api.anthropic.com",
     contextWindow: 200000,
     maxOutputTokens: 64000,
-    supports: { reasoning: true, tools: true },
+    supports: { reasoning: true, tools: true, reasoningXhigh: true },
     pricing: {
       inputPer1M: 1,
       outputPer1M: 5,
@@ -95,10 +96,9 @@ export const geminiModels = {
     provider: "gemini",
     id: "gemini-3-pro-preview",
     name: "Gemini 3 Pro Preview",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     contextWindow: 1000000,
     maxOutputTokens: 64000,
-    supports: { reasoning: true, tools: true },
+    supports: { reasoning: true, tools: true, reasoningXhigh: false },
     pricing: {
       inputPer1M: 2,
       outputPer1M: 12,
@@ -110,10 +110,9 @@ export const geminiModels = {
     provider: "gemini",
     id: "gemini-3-flash-preview",
     name: "Gemini 3 Flash Preview",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     contextWindow: 1048576,
     maxOutputTokens: 65536,
-    supports: { reasoning: true, tools: true },
+    supports: { reasoning: true, tools: true, reasoningXhigh: false },
     pricing: {
       inputPer1M: 0.5,
       outputPer1M: 3,
@@ -148,9 +147,22 @@ export function getModel(provider: Provider, id: string): AnyModel {
       if (!m) throw new Error(`Unknown Gemini model: ${id}`);
       return m;
     }
+    default:
+      return exhaustive(provider);
   }
 }
 
-export function supportsXhigh(model: Model<"openai">): boolean {
-  return model.id.startsWith("gpt-5.2");
+export function supportsXhigh(model: { supports: { reasoningXhigh: boolean } }): boolean {
+  return model.supports.reasoningXhigh;
+}
+
+export function clampReasoning(effort: ReasoningEffort): Exclude<ReasoningEffort, "xhigh"> {
+  return effort === "xhigh" ? "high" : effort;
+}
+
+export function clampReasoningForModel(model: Model, effort: ReasoningEffort): ReasoningEffort {
+  if (effort === "none") return "none";
+  if (!model.supports.reasoning) return "none";
+  if (!supportsXhigh(model)) return clampReasoning(effort);
+  return effort;
 }

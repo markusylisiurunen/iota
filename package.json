@@ -15,8 +15,9 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch",
-    "check": "biome check --write . && tsc -p tsconfig.json --noEmit"
+    "check": "biome check --write . && tsc -p tsconfig.json --noEmit",
+    "smoke": "npm run build && IOTA_SMOKE=1 vitest run tests/e2e-*.test.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
@@ -28,7 +29,8 @@
     "@biomejs/biome": "^2.3.10",
     "@types/node": "^24.10.4",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   },
   "engines": {
     "node": ">=20.0.0"

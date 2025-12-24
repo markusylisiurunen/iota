@@ -12,4 +12,14 @@ export class AssistantStream extends EventStream<AssistantStreamEvent, Assistant
       },
     );
   }
+
+  async resultOrThrow(): Promise<AssistantMessage> {
+    const msg = await this.result();
+    if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+      const error = new Error(msg.errorMessage ?? "Request failed");
+      (error as any).assistantMessage = msg;
+      throw error;
+    }
+    return msg;
+  }
 }

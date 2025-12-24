@@ -1,426 +1,358 @@
-import { GoogleGenAI } from "@google/genai";
-import { AssistantStream } from "../assistant-stream.js";
+import {
+  type Content,
+  FinishReason,
+  type Tool as GeminiTool,
+  GoogleGenAI,
+  type HttpOptions,
+  type Part,
+  type Schema,
+  type ThinkingConfig,
+  ThinkingLevel,
+  type UsageMetadata,
+} from "@google/genai";
+import type { AssistantStream } from "../assistant-stream.js";
 import type { AnyModel } from "../models.js";
-import { calculateCost } from "../models.js";
-import { emptyUsage } from "../stream.js";
+import { StreamController } from "../stream-controller.js";
 import type {
-  AssistantMessage,
-  AssistantMessageDraft,
   AssistantPart,
-  Context,
+  NormalizedContext,
   ReasoningEffort,
+  ResolvedStreamOptions,
   StopReason,
-  StreamOptions,
   Tool,
   Usage,
 } from "../types.js";
+import { exhaustive } from "../utils/exhaustive.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
 type GeminiModel = Extract<AnyModel, { provider: "gemini" }>;
 
-type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high";
+const geminiHttpOptions: HttpOptions = {
+  baseUrl: "https://generativelanguage.googleapis.com",
+  apiVersion: "v1beta",
+};
 
 export function streamGemini(
   model: GeminiModel,
-  context: Context,
-  options: StreamOptions,
+  context: NormalizedContext,
+  options: ResolvedStreamOptions,
 ): AssistantStream {
-  const stream = new AssistantStream();
+  const ctrl = new StreamController(model, options);
+  ctrl.start();
 
   (async () => {
-    const output: AssistantMessageDraft = {
-      role: "assistant",
-      provider: model.provider,
-      model: model.id,
-      content: [],
-      stopReason: "stop",
-      usage: emptyUsage(),
-    };
+    const output = ctrl.output;
 
     try {
       const client = new GoogleGenAI({
-        apiKey: options.apiKey!,
-        httpOptions: model.baseUrl
-          ? {
-              baseUrl: model.baseUrl,
-              apiVersion: "", // baseUrl already includes version path
-            }
-          : undefined,
+        apiKey: options.apiKey,
+        httpOptions: geminiHttpOptions,
       });
 
       const params = buildParams(model, context, options);
-      const geminiStream = await client.interactions.create(params, { signal: options.signal });
+      const geminiStream = await client.models.generateContentStream(params);
 
-      stream.push({ type: "start", partial: output });
+      let currentIndex: number | null = null;
+      let currentType: "text" | "thinking" | null = null;
 
-      const started = new Set<number>();
-      const indexToPartIndex = new Map<number, number>();
+      const startPart = (type: "text" | "thinking") => {
+        const part: AssistantPart =
+          type === "text" ? { type: "text", text: "" } : { type: "thinking", text: "" };
+        const index = ctrl.addPart(part);
+        currentIndex = index;
+        currentType = type;
+        return index;
+      };
 
-      const partIndex = () => output.content.length - 1;
+      const endCurrent = () => {
+        if (currentIndex === null) return;
+        ctrl.endPart(currentIndex);
+        currentIndex = null;
+        currentType = null;
+      };
 
-      for await (const event of geminiStream as any) {
-        if (event.event_type === "content.start") {
-          const idx = typeof event.index === "number" ? event.index : null;
-          const content = event.content;
-          if (idx === null || !content?.type) continue;
-          started.add(idx);
+      for await (const chunk of geminiStream) {
+        const candidate = chunk.candidates?.[0];
 
-          if (content.type === "text") {
-            const part: Extract<AssistantPart, { type: "text" }> = { type: "text", text: "" };
-            output.content.push(part);
-            const pidx = partIndex();
-            indexToPartIndex.set(idx, pidx);
-            stream.push({ type: "part_start", index: pidx, partial: output });
+        if (candidate?.content?.parts) {
+          for (const p of candidate.content.parts) {
+            if (p.text !== undefined) {
+              const isThinking = p.thought === true;
+              if (isThinking && (options.reasoning ?? "none") === "none") continue;
 
-            const initial = content.text ?? "";
-            if (initial.length > 0) {
-              part.text += initial;
-              stream.push({ type: "part_delta", index: pidx, delta: initial, partial: output });
+              const desired = isThinking ? "thinking" : "text";
+              if (currentIndex === null || currentType !== desired) endCurrent();
+
+              const index = currentIndex === null ? startPart(desired) : currentIndex;
+              const part = output.content[index];
+              const delta = p.text ?? "";
+              if (delta.length === 0) continue;
+
+              if (part?.type === "text") {
+                part.text += delta;
+              } else if (part?.type === "thinking") {
+                part.text += delta;
+                if (typeof p.thoughtSignature === "string") {
+                  part.meta = {
+                    provider: "gemini",
+                    type: "thought_signature",
+                    signature: p.thoughtSignature,
+                  };
+                }
+              }
+
+              ctrl.delta(index, delta);
             }
-          } else if (content.type === "thought") {
-            if ((options.reasoning ?? "none") === "none") {
-              indexToPartIndex.set(idx, -1);
-              continue;
-            }
 
-            const part: Extract<AssistantPart, { type: "thinking" }> = {
-              type: "thinking",
-              text: "",
-              signature: content.signature,
-            };
-            output.content.push(part);
-            const pidx = partIndex();
-            indexToPartIndex.set(idx, pidx);
-            stream.push({ type: "part_start", index: pidx, partial: output });
+            if (p.functionCall) {
+              endCurrent();
 
-            const initialSummary = Array.isArray(content.summary)
-              ? content.summary.map((p: any) => (p?.type === "text" ? (p.text ?? "") : "")).join("")
-              : "";
+              const id = resolveToolCallId(p.functionCall.id, p.functionCall.name, output.content);
+              const toolCall: Extract<AssistantPart, { type: "tool_call" }> = {
+                type: "tool_call",
+                id,
+                name: p.functionCall.name ?? "",
+                args: asRecord(p.functionCall.args),
+              };
 
-            if (initialSummary.length > 0) {
-              part.text += initialSummary;
-              stream.push({
-                type: "part_delta",
-                index: pidx,
-                delta: initialSummary,
-                partial: output,
-              });
-            }
-          } else if (content.type === "function_call") {
-            const part: Extract<AssistantPart, { type: "tool_call" }> = {
-              type: "tool_call",
-              id: content.id,
-              name: content.name,
-              args: content.arguments ?? {},
-            };
-            output.content.push(part);
-            indexToPartIndex.set(idx, partIndex());
-            stream.push({ type: "part_start", index: partIndex(), partial: output });
-            stream.push({
-              type: "part_delta",
-              index: partIndex(),
-              delta: JSON.stringify(part.args),
-              partial: output,
-            });
-          } else {
-            indexToPartIndex.set(idx, -1);
-          }
-        } else if (event.event_type === "content.delta") {
-          const idx = typeof event.index === "number" ? event.index : null;
-          const delta = event.delta;
-          if (idx === null || !delta?.type) continue;
+              if (typeof p.thoughtSignature === "string") {
+                toolCall.meta = {
+                  provider: "gemini",
+                  type: "thought_signature",
+                  signature: p.thoughtSignature,
+                };
+              }
 
-          const mapped = indexToPartIndex.get(idx);
-          if (mapped === undefined || mapped === -1) continue;
-
-          const currentPart = output.content[mapped];
-          if (!currentPart) continue;
-
-          if (delta.type === "text") {
-            if (currentPart.type !== "text") continue;
-            const text = delta.text ?? "";
-            if (text.length === 0) continue;
-            currentPart.text += text;
-            stream.push({ type: "part_delta", index: mapped, delta: text, partial: output });
-          } else if (delta.type === "thought" || delta.type === "thought_summary") {
-            if (currentPart.type !== "thinking") continue;
-
-            const text =
-              typeof delta.thought === "string"
-                ? delta.thought
-                : delta.content?.type === "text"
-                  ? (delta.content.text ?? "")
-                  : "";
-
-            if (text.length === 0) continue;
-            currentPart.text += text;
-            stream.push({ type: "part_delta", index: mapped, delta: text, partial: output });
-          } else if (delta.type === "thought_signature") {
-            if (currentPart.type !== "thinking") continue;
-            if (typeof delta.signature === "string") currentPart.signature = delta.signature;
-          } else if (delta.type === "function_call") {
-            if (currentPart.type !== "tool_call") continue;
-            if (typeof delta.name === "string") currentPart.name = delta.name;
-            if (typeof delta.id === "string") currentPart.id = delta.id;
-            if (delta.arguments && typeof delta.arguments === "object") {
-              currentPart.args = { ...(currentPart.args as any), ...(delta.arguments as any) };
-              stream.push({
-                type: "part_delta",
-                index: mapped,
-                delta: JSON.stringify(delta.arguments),
-                partial: output,
-              });
+              const index = ctrl.addPart(toolCall);
+              ctrl.delta(index, JSON.stringify(toolCall.args));
+              ctrl.endPart(index);
             }
           }
-        } else if (event.event_type === "content.stop") {
-          const idx = typeof event.index === "number" ? event.index : null;
-          if (idx === null) continue;
-          started.delete(idx);
+        }
 
-          const mapped = indexToPartIndex.get(idx);
-          if (mapped === undefined || mapped === -1) continue;
+        if (candidate?.finishReason) {
+          ctrl.setStopReason(mapStopReason(candidate.finishReason));
+        }
 
-          stream.push({ type: "part_end", index: mapped, partial: output });
-        } else if (event.event_type === "interaction.complete") {
-          const interaction = event.interaction;
-
-          if (interaction?.usage) {
-            output.usage = usageFromGeminiInteractions(interaction.usage);
-            calculateCost(model, output.usage);
-          }
-
-          output.stopReason = mapStopReason(interaction?.status);
-          if (output.content.some((p) => p.type === "tool_call") && output.stopReason === "stop") {
-            output.stopReason = "tool_use";
-          }
-        } else if (event.event_type === "error") {
-          throw new Error(event.error?.message || "Gemini error");
+        if (chunk.usageMetadata) {
+          ctrl.setUsage(usageFromGemini(chunk.usageMetadata));
         }
       }
 
-      for (const idx of started) {
-        const mapped = indexToPartIndex.get(idx);
-        if (mapped === undefined || mapped === -1) continue;
-        stream.push({ type: "part_end", index: mapped, partial: output });
-      }
-
-      output.content = output.content.filter(
-        (p) => p.type !== "thinking" || (p.signature && p.signature.trim().length > 0),
-      );
-
-      if (options.signal?.aborted) {
-        output.stopReason = "aborted";
-        output.errorMessage = output.errorMessage ?? "Request was aborted";
-      }
-
-      if (!output.usage) output.usage = emptyUsage();
-      if (!output.stopReason) output.stopReason = "stop";
-
-      const final = output as AssistantMessage;
-
-      if (final.stopReason === "error" || final.stopReason === "aborted") {
-        if (!final.errorMessage) final.errorMessage = "Request failed";
-        stream.push({ type: "error", error: final });
-      } else {
-        stream.push({ type: "done", message: final });
-      }
-
-      stream.end();
+      endCurrent();
+      ctrl.finish();
     } catch (error) {
-      output.stopReason = options.signal?.aborted ? "aborted" : "error";
-      output.usage = output.usage ?? emptyUsage();
-      output.errorMessage = error instanceof Error ? error.message : String(error);
-      stream.push({ type: "error", error: output as AssistantMessage });
-      stream.end();
+      ctrl.fail(error);
     }
   })();
 
-  return stream;
+  return ctrl.stream;
 }
 
-function buildParams(model: GeminiModel, context: Context, options: StreamOptions) {
-  const input = convertMessages(context);
+function buildParams(
+  model: GeminiModel,
+  context: NormalizedContext,
+  options: ResolvedStreamOptions,
+) {
+  const contents = convertMessages(context);
 
-  const generation_config: any = {};
+  const config: Record<string, unknown> = {};
 
-  if (options.temperature !== undefined) {
-    generation_config.temperature = options.temperature;
-  }
-
-  if (options.maxTokens !== undefined) {
-    generation_config.max_output_tokens = options.maxTokens;
-  }
-
-  const reasoning = options.reasoning ?? "none";
-  if (model.supports.reasoning) {
-    if (reasoning === "none") {
-      generation_config.thinking_summaries = "none";
-    } else {
-      const effort = (reasoning === "xhigh" ? "high" : reasoning) as Exclude<
-        ReasoningEffort,
-        "none" | "xhigh"
-      >;
-      const thinkingLevel = geminiThinkingLevel(model.id, effort);
-      if (thinkingLevel) generation_config.thinking_level = thinkingLevel;
-      generation_config.thinking_summaries = "auto";
-    }
-  }
-
-  const params: any = {
-    model: model.id,
-    input,
-    stream: true,
-    store: false,
-  };
-
-  if (Object.keys(generation_config).length > 0) {
-    params.generation_config = generation_config;
-  }
+  if (options.temperature !== undefined) config.temperature = options.temperature;
+  if (options.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
 
   if (context.system && context.system.trim().length > 0) {
-    params.system_instruction = sanitizeSurrogates(context.system);
+    config.systemInstruction = sanitizeSurrogates(context.system);
   }
 
   if (context.tools && context.tools.length > 0) {
-    params.tools = convertTools(context.tools);
+    config.tools = convertTools(context.tools);
   }
 
-  return params;
+  const reasoning = options.reasoning ?? "none";
+  if (model.supports.reasoning && reasoning !== "none") {
+    const thinkingConfig: ThinkingConfig = { includeThoughts: true };
+
+    const effort = reasoning === "xhigh" ? "high" : reasoning;
+    const thinkingLevel = geminiThinkingLevel(model.id, effort);
+    if (thinkingLevel) thinkingConfig.thinkingLevel = thinkingLevel;
+
+    config.thinkingConfig = thinkingConfig;
+  }
+
+  if (options.signal) {
+    if (options.signal.aborted) throw new Error("Request aborted");
+    config.abortSignal = options.signal;
+  }
+
+  return {
+    model: model.id,
+    contents,
+    config,
+  };
 }
 
-function convertMessages(context: Context) {
-  const turns: any[] = [];
+function convertMessages(context: NormalizedContext): Content[] {
+  const contents: Content[] = [];
 
   for (const msg of context.messages) {
-    if (msg.role === "system") continue;
-
     if (msg.role === "user") {
       if (msg.content.trim().length === 0) continue;
-      turns.push({
+      contents.push({
         role: "user",
-        content: [{ type: "text", text: sanitizeSurrogates(msg.content) }],
+        parts: [{ text: sanitizeSurrogates(msg.content) }],
       });
       continue;
     }
 
     if (msg.role === "assistant") {
-      const parts: AssistantPart[] =
-        typeof msg.content === "string" ? [{ type: "text", text: msg.content }] : msg.content;
-
-      const content: any[] = [];
-      for (const part of parts) {
+      const outParts: Part[] = [];
+      for (const part of msg.content) {
         if (part.type === "text") {
           if (part.text.trim().length === 0) continue;
-          content.push({ type: "text", text: sanitizeSurrogates(part.text) });
+          outParts.push({ text: sanitizeSurrogates(part.text) });
         } else if (part.type === "thinking") {
-          if (!part.signature || part.signature.trim().length === 0) continue;
-          if (part.text.trim().length === 0) continue;
-          content.push({
-            type: "thought",
-            signature: part.signature,
-            summary: [{ type: "text", text: sanitizeSurrogates(part.text) }],
-          });
+          if (part.meta?.provider === "gemini" && part.meta.type === "thought_signature") {
+            if (part.text.trim().length > 0) {
+              outParts.push({
+                thought: true,
+                text: sanitizeSurrogates(part.text),
+                thoughtSignature: part.meta.signature,
+              });
+            }
+          } else if (part.text.trim().length > 0) {
+            outParts.push({ text: `<thinking>\n${sanitizeSurrogates(part.text)}\n</thinking>` });
+          }
         } else if (part.type === "tool_call") {
-          content.push({
-            type: "function_call",
-            id: part.id,
-            name: part.name,
-            arguments: part.args && typeof part.args === "object" ? part.args : {},
-          });
+          const p: Part = {
+            functionCall: {
+              id: part.id,
+              name: part.name,
+              args: asRecord(part.args),
+            },
+          };
+
+          if (part.meta?.provider === "gemini" && part.meta.type === "thought_signature") {
+            p.thoughtSignature = part.meta.signature;
+          }
+
+          outParts.push(p);
         }
       }
 
-      if (content.length > 0) turns.push({ role: "model", content });
+      if (outParts.length > 0) contents.push({ role: "model", parts: outParts });
       continue;
     }
 
     if (msg.role === "tool") {
-      turns.push({
+      contents.push({
         role: "user",
-        content: [
+        parts: [
           {
-            type: "function_result",
-            call_id: msg.toolCallId,
-            name: msg.toolName,
-            is_error: msg.isError ?? false,
-            result: sanitizeSurrogates(msg.content),
+            functionResponse: {
+              id: msg.toolCallId,
+              name: msg.toolName,
+              response: msg.isError
+                ? { error: sanitizeSurrogates(msg.content) }
+                : { output: sanitizeSurrogates(msg.content) },
+            },
           },
         ],
       });
     }
   }
 
-  return turns;
+  return contents;
 }
 
-function convertTools(tools: Tool[]) {
-  return tools.map((t) => ({
-    type: "function" as const,
-    name: t.name,
-    description: t.description,
-    parameters: t.parameters,
-  }));
+function convertTools(tools: Tool[]): GeminiTool[] | undefined {
+  if (tools.length === 0) return undefined;
+
+  return [
+    {
+      functionDeclarations: tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters as Schema,
+      })),
+    },
+  ];
 }
 
-function geminiThinkingLevel(
-  modelId: string,
-  effort: Exclude<ReasoningEffort, "none" | "xhigh">,
-): GeminiThinkingLevel | undefined {
+function resolveToolCallId(
+  providedId: string | undefined,
+  name: string | undefined,
+  parts: AssistantPart[],
+): string {
+  const existing = new Set(parts.filter((p) => p.type === "tool_call").map((p) => p.id));
+  if (providedId && !existing.has(providedId)) return providedId;
+
+  const base = name && name.trim().length > 0 ? name : "tool";
+  let id = `${base}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  while (existing.has(id)) id = `${base}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return id;
+}
+
+function geminiThinkingLevel(modelId: string, effort: Exclude<ReasoningEffort, "none" | "xhigh">) {
   if (modelId.includes("3-pro")) {
     switch (effort) {
       case "minimal":
       case "low":
       case "medium":
-        return "low";
+        return ThinkingLevel.LOW;
       case "high":
-        return "high";
+        return ThinkingLevel.HIGH;
+      default:
+        return exhaustive(effort);
     }
   }
 
   switch (effort) {
     case "minimal":
-      return "minimal";
+      return ThinkingLevel.MINIMAL;
     case "low":
-      return "low";
+      return ThinkingLevel.LOW;
     case "medium":
-      return "medium";
+      return ThinkingLevel.MEDIUM;
     case "high":
-      return "high";
-  }
-}
-
-function mapStopReason(status: string | undefined): StopReason {
-  switch (status) {
-    case "completed":
-      return "stop";
-    case "requires_action":
-      return "tool_use";
-    case "cancelled":
-      return "aborted";
-    case "failed":
-      return "error";
+      return ThinkingLevel.HIGH;
     default:
-      return "stop";
+      return exhaustive(effort);
   }
 }
 
-function usageFromGeminiInteractions(u: {
-  total_input_tokens?: number;
-  total_output_tokens?: number;
-  total_cached_tokens?: number;
-  total_reasoning_tokens?: number;
-  total_tokens?: number;
-}): Usage {
-  const cached = u.total_cached_tokens || 0;
-  const input = Math.max(0, (u.total_input_tokens || 0) - cached);
-  const output = (u.total_output_tokens || 0) + (u.total_reasoning_tokens || 0);
+function mapStopReason(reason: FinishReason | string): StopReason {
+  const r = typeof reason === "string" ? reason : reason;
+
+  switch (r) {
+    case FinishReason.STOP:
+    case "STOP":
+      return "stop";
+    case FinishReason.MAX_TOKENS:
+    case "MAX_TOKENS":
+      return "length";
+    default:
+      return "error";
+  }
+}
+
+function usageFromGemini(u: UsageMetadata): Usage {
+  const cached = u.cachedContentTokenCount || 0;
+  const toolUsePrompt = u.toolUsePromptTokenCount || 0;
+  const input = Math.max(0, (u.promptTokenCount || 0) - cached) + toolUsePrompt;
+  const output = (u.responseTokenCount || 0) + (u.thoughtsTokenCount || 0);
 
   return {
     inputTokens: input,
     outputTokens: output,
     cacheReadTokens: cached,
     cacheWriteTokens: 0,
-    totalTokens: u.total_tokens || input + output + cached,
+    totalTokens: u.totalTokenCount || input + output + cached,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }

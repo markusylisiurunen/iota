@@ -5,6 +5,8 @@
       ".github/**/*.yml",
       "src/**/*.ts",
       "src/**/*.js",
+      "tests/**/*.ts",
+      "tests/**/*.js",
       "*.json",
       "*.md",
       "*.ts",

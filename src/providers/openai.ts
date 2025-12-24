@@ -5,254 +5,280 @@ import type {
   ResponseInput,
   ResponseOutputMessage,
   ResponseReasoningItem,
+  ResponseStreamEvent,
 } from "openai/resources/responses/responses.js";
-import { AssistantStream } from "../assistant-stream.js";
+import type { AssistantStream } from "../assistant-stream.js";
 import type { AnyModel } from "../models.js";
-import { calculateCost } from "../models.js";
-import { emptyUsage } from "../stream.js";
+import { StreamController } from "../stream-controller.js";
 import type {
-  AssistantMessage,
-  AssistantMessageDraft,
   AssistantPart,
-  Context,
+  NormalizedContext,
   ReasoningEffort,
+  ResolvedStreamOptions,
   StopReason,
-  StreamOptions,
   Tool,
   Usage,
 } from "../types.js";
+import { exhaustive } from "../utils/exhaustive.js";
 import { parseStreamingJson } from "../utils/json.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
 type OpenAIModel = Extract<AnyModel, { provider: "openai" }>;
 
+type OpenAIToolCallPart = Extract<AssistantPart, { type: "tool_call" }>;
+
+type OpenAITextPart = Extract<AssistantPart, { type: "text" }>;
+
+type OpenAIThinkingPart = Extract<AssistantPart, { type: "thinking" }>;
+
+const openaiBaseUrl = "https://api.openai.com/v1";
+
 export function streamOpenAI(
   model: OpenAIModel,
-  context: Context,
-  options: StreamOptions,
+  context: NormalizedContext,
+  options: ResolvedStreamOptions,
 ): AssistantStream {
-  const stream = new AssistantStream();
+  const ctrl = new StreamController(model, options);
+  ctrl.start();
 
   (async () => {
-    const output: AssistantMessageDraft = {
-      role: "assistant",
-      provider: model.provider,
-      model: model.id,
-      content: [],
-      stopReason: "stop",
-      usage: emptyUsage(),
-    };
+    const output = ctrl.output;
+
+    const partIndexByItemId = new Map<string, number>();
+    const ignoredItemIds = new Set<string>();
+
+    const toolCallArgsJsonByIndex = new Map<number, string>();
 
     try {
       const client = new OpenAI({
-        apiKey: options.apiKey!,
-        baseURL: model.baseUrl,
-        dangerouslyAllowBrowser: true,
+        apiKey: options.apiKey,
+        baseURL: openaiBaseUrl,
       });
 
       const params = buildParams(model, context, options);
       const openaiStream = await client.responses.create(params, { signal: options.signal });
 
-      stream.push({ type: "start", partial: output });
-
-      let currentItem:
-        | ResponseReasoningItem
-        | ResponseOutputMessage
-        | ResponseFunctionToolCall
-        | null = null;
-      let currentPart: (AssistantPart & { partialJson?: string }) | null = null;
-      const parts = output.content;
-      const partIndex = () => parts.length - 1;
-
       for await (const event of openaiStream) {
-        if (event.type === "response.output_item.added") {
+        handleEvent(event);
+      }
+
+      ctrl.finish();
+    } catch (error) {
+      ctrl.fail(error);
+    }
+
+    function handleEvent(event: ResponseStreamEvent): void {
+      switch (event.type) {
+        case "response.output_item.added": {
           const item = event.item;
+          const itemId = item.id ?? `output_${event.output_index}`;
+
           if (item.type === "reasoning") {
-            if ((options.reasoning ?? "none") === "none") continue;
-            currentItem = item;
-            currentPart = { type: "thinking", text: "" };
-            output.content.push(currentPart);
-            stream.push({ type: "part_start", index: partIndex(), partial: output });
-          } else if (item.type === "message") {
-            currentItem = item;
-            currentPart = { type: "text", text: "" };
-            output.content.push(currentPart);
-            stream.push({ type: "part_start", index: partIndex(), partial: output });
-          } else if (item.type === "function_call") {
-            currentItem = item;
-            currentPart = {
+            if ((options.reasoning ?? "none") === "none") {
+              ignoredItemIds.add(itemId);
+              return;
+            }
+
+            const part: OpenAIThinkingPart = { type: "thinking", text: "" };
+            const idx = ctrl.addPart(part);
+            partIndexByItemId.set(itemId, idx);
+            return;
+          }
+
+          if (item.type === "message") {
+            const part: OpenAITextPart = { type: "text", text: "" };
+            const idx = ctrl.addPart(part);
+            partIndexByItemId.set(itemId, idx);
+            return;
+          }
+
+          if (item.type === "function_call") {
+            const part: OpenAIToolCallPart = {
               type: "tool_call",
               id: item.call_id,
               name: item.name,
               args: {},
-              signature: item.id,
-              partialJson: item.arguments || "",
             };
-            output.content.push(currentPart);
-            stream.push({ type: "part_start", index: partIndex(), partial: output });
+
+            if (item.id) {
+              part.meta = { provider: "openai", type: "function_call_item_id", id: item.id };
+            }
+
+            const idx = ctrl.addPart(part);
+            partIndexByItemId.set(itemId, idx);
+
+            const initial = item.arguments || "";
+            toolCallArgsJsonByIndex.set(idx, initial);
+            if (initial.trim().length > 0) {
+              part.args = parseStreamingJson(initial);
+            }
+
+            return;
           }
-        } else if (event.type === "response.reasoning_summary_part.added") {
-          if (currentItem && currentItem.type === "reasoning") {
-            currentItem.summary = currentItem.summary || [];
-            currentItem.summary.push(event.part);
-          }
-        } else if (event.type === "response.reasoning_summary_text.delta") {
-          if (currentItem?.type !== "reasoning") continue;
-          if (!currentPart || currentPart.type !== "thinking") continue;
 
-          currentItem.summary = currentItem.summary || [];
-          const last = currentItem.summary[currentItem.summary.length - 1];
-          if (!last) continue;
+          return;
+        }
 
-          currentPart.text += event.delta;
-          last.text += event.delta;
-          stream.push({
-            type: "part_delta",
-            index: partIndex(),
-            delta: event.delta,
-            partial: output,
-          });
-        } else if (event.type === "response.reasoning_summary_part.done") {
-          if (currentItem?.type !== "reasoning") continue;
-          if (!currentPart || currentPart.type !== "thinking") continue;
+        case "response.reasoning_summary_text.delta": {
+          if (ignoredItemIds.has(event.item_id)) return;
 
-          currentItem.summary = currentItem.summary || [];
-          const last = currentItem.summary[currentItem.summary.length - 1];
-          if (!last) continue;
+          const idx = partIndexByItemId.get(event.item_id);
+          if (idx === undefined) return;
 
-          currentPart.text += "\n\n";
-          last.text += "\n\n";
-          stream.push({ type: "part_delta", index: partIndex(), delta: "\n\n", partial: output });
-        } else if (event.type === "response.content_part.added") {
-          if (currentItem?.type !== "message") continue;
-          currentItem.content = currentItem.content || [];
-          if (event.part.type === "output_text" || event.part.type === "refusal") {
-            currentItem.content.push(event.part);
-          }
-        } else if (event.type === "response.output_text.delta") {
-          if (currentItem?.type !== "message") continue;
-          if (!currentPart || currentPart.type !== "text") continue;
+          const part = output.content[idx];
+          if (!part || part.type !== "thinking") return;
 
-          const last = currentItem.content[currentItem.content.length - 1];
-          if (!last || last.type !== "output_text") continue;
-          currentPart.text += event.delta;
-          last.text += event.delta;
-          stream.push({
-            type: "part_delta",
-            index: partIndex(),
-            delta: event.delta,
-            partial: output,
-          });
-        } else if (event.type === "response.refusal.delta") {
-          if (currentItem?.type !== "message") continue;
-          if (!currentPart || currentPart.type !== "text") continue;
+          part.text += event.delta;
+          ctrl.delta(idx, event.delta);
+          return;
+        }
 
-          const last = currentItem.content[currentItem.content.length - 1];
-          if (!last || last.type !== "refusal") continue;
-          currentPart.text += event.delta;
-          last.refusal += event.delta;
-          stream.push({
-            type: "part_delta",
-            index: partIndex(),
-            delta: event.delta,
-            partial: output,
-          });
-        } else if (event.type === "response.function_call_arguments.delta") {
-          if (currentItem?.type !== "function_call") continue;
-          if (!currentPart || currentPart.type !== "tool_call") continue;
+        case "response.reasoning_summary_part.done": {
+          if (ignoredItemIds.has(event.item_id)) return;
 
-          (currentPart as any).partialJson = ((currentPart as any).partialJson ?? "") + event.delta;
-          (currentPart as any).args = parseStreamingJson((currentPart as any).partialJson);
-          stream.push({
-            type: "part_delta",
-            index: partIndex(),
-            delta: event.delta,
-            partial: output,
-          });
-        } else if (event.type === "response.output_item.done") {
+          const idx = partIndexByItemId.get(event.item_id);
+          if (idx === undefined) return;
+
+          const part = output.content[idx];
+          if (!part || part.type !== "thinking") return;
+
+          part.text += "\n\n";
+          ctrl.delta(idx, "\n\n");
+          return;
+        }
+
+        case "response.output_text.delta": {
+          const idx = partIndexByItemId.get(event.item_id);
+          if (idx === undefined) return;
+
+          const part = output.content[idx];
+          if (!part || part.type !== "text") return;
+
+          part.text += event.delta;
+          ctrl.delta(idx, event.delta);
+          return;
+        }
+
+        case "response.refusal.delta": {
+          const idx = partIndexByItemId.get(event.item_id);
+          if (idx === undefined) return;
+
+          const part = output.content[idx];
+          if (!part || part.type !== "text") return;
+
+          part.text += event.delta;
+          ctrl.delta(idx, event.delta);
+          return;
+        }
+
+        case "response.function_call_arguments.delta": {
+          const idx = partIndexByItemId.get(event.item_id);
+          if (idx === undefined) return;
+
+          const part = output.content[idx];
+          if (!part || part.type !== "tool_call") return;
+
+          const current = toolCallArgsJsonByIndex.get(idx) ?? "";
+          const next = current + event.delta;
+          toolCallArgsJsonByIndex.set(idx, next);
+
+          part.args = parseStreamingJson(next);
+          ctrl.delta(idx, event.delta);
+          return;
+        }
+
+        case "response.output_item.done": {
           const item = event.item;
+          const itemId = item.id ?? `output_${event.output_index}`;
 
-          if (item.type === "reasoning" && currentPart?.type === "thinking") {
-            currentPart.text = item.summary?.map((p) => p.text).join("\n\n") || "";
-            currentPart.signature = JSON.stringify(item);
-            stream.push({ type: "part_end", index: partIndex(), partial: output });
-            currentPart = null;
-            currentItem = null;
-          } else if (item.type === "message" && currentPart?.type === "text") {
-            currentPart.text = item.content
-              .map((c) => (c.type === "output_text" ? c.text : c.refusal))
-              .join("");
-            currentPart.signature = item.id;
-            stream.push({ type: "part_end", index: partIndex(), partial: output });
-            currentPart = null;
-            currentItem = null;
-          } else if (item.type === "function_call" && currentPart?.type === "tool_call") {
-            (currentPart as any).args = JSON.parse(item.arguments);
-            delete (currentPart as any).partialJson;
-            stream.push({ type: "part_end", index: partIndex(), partial: output });
-            currentPart = null;
-            currentItem = null;
+          if (ignoredItemIds.has(itemId)) return;
+
+          const idx = partIndexByItemId.get(itemId);
+          if (idx === undefined) return;
+
+          const part = output.content[idx];
+          if (!part) return;
+
+          if (item.type === "reasoning" && part.type === "thinking") {
+            part.meta = { provider: "openai", type: "reasoning_item", item };
+            ctrl.endPart(idx);
+            return;
           }
-        } else if (event.type === "response.completed") {
+
+          if (item.type === "message" && part.type === "text") {
+            part.meta = { provider: "openai", type: "message_id", id: item.id };
+            ctrl.endPart(idx);
+            return;
+          }
+
+          if (item.type === "function_call" && part.type === "tool_call") {
+            if (item.id) {
+              part.meta = { provider: "openai", type: "function_call_item_id", id: item.id };
+            }
+
+            part.args = parseFinalToolArgs(item);
+            toolCallArgsJsonByIndex.delete(idx);
+
+            ctrl.endPart(idx);
+            return;
+          }
+
+          ctrl.endPart(idx);
+          return;
+        }
+
+        case "response.completed": {
           const response = event.response;
           if (response?.usage) {
             const cached = response.usage.input_tokens_details?.cached_tokens || 0;
-            output.usage = usageFromOpenAI({
-              inputTokens: (response.usage.input_tokens || 0) - cached,
-              outputTokens: response.usage.output_tokens || 0,
-              cacheReadTokens: cached,
-              totalTokens: response.usage.total_tokens || 0,
-            });
-            calculateCost(model, output.usage);
+            ctrl.setUsage(
+              usageFromOpenAI({
+                inputTokens: (response.usage.input_tokens || 0) - cached,
+                outputTokens: response.usage.output_tokens || 0,
+                cacheReadTokens: cached,
+                totalTokens: response.usage.total_tokens || 0,
+              }),
+            );
           }
 
-          output.stopReason = mapStopReason(response?.status);
-          if (output.content.some((p) => p.type === "tool_call") && output.stopReason === "stop") {
-            output.stopReason = "tool_use";
-          }
-        } else if (event.type === "error") {
+          ctrl.setStopReason(mapStopReason(response?.status));
+          return;
+        }
+
+        case "error": {
           throw new Error(event.message || "OpenAI error");
-        } else if (event.type === "response.failed") {
+        }
+
+        case "response.failed": {
           throw new Error("OpenAI request failed");
         }
+
+        default:
+          return;
       }
-
-      if (options.signal?.aborted) {
-        output.stopReason = "aborted";
-        output.errorMessage = output.errorMessage ?? "Request was aborted";
-      }
-
-      if (!output.usage) output.usage = emptyUsage();
-      if (!output.stopReason) output.stopReason = "stop";
-
-      const final = output as AssistantMessage;
-
-      if (final.stopReason === "error" || final.stopReason === "aborted") {
-        if (!final.errorMessage) final.errorMessage = "Request failed";
-        stream.push({ type: "error", error: final });
-      } else {
-        stream.push({ type: "done", message: final });
-      }
-
-      stream.end();
-    } catch (error) {
-      output.stopReason = options.signal?.aborted ? "aborted" : "error";
-      output.usage = output.usage ?? emptyUsage();
-      output.errorMessage = error instanceof Error ? error.message : String(error);
-      stream.push({ type: "error", error: output as AssistantMessage });
-      stream.end();
     }
   })();
 
-  return stream;
+  return ctrl.stream;
+}
+
+function parseFinalToolArgs(item: ResponseFunctionToolCall): unknown {
+  const raw = item.arguments || "";
+  if (raw.trim().length === 0) return {};
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return parseStreamingJson(raw);
+  }
 }
 
 function buildParams(
   model: OpenAIModel,
-  context: Context,
-  options: StreamOptions,
+  context: NormalizedContext,
+  options: ResolvedStreamOptions,
 ): ResponseCreateParamsStreaming {
-  const messages = convertMessages(model, context);
+  const messages = convertMessages(context);
 
   const params: ResponseCreateParamsStreaming = {
     model: model.id,
@@ -274,7 +300,7 @@ function buildParams(
 
   if (model.supports.reasoning && (options.reasoning ?? "none") !== "none") {
     params.reasoning = {
-      effort: mapReasoningEffort(options.reasoning ?? "none"),
+      effort: mapReasoningEffort(options.reasoning),
       summary: "auto",
     };
     params.include = ["reasoning.encrypted_content"];
@@ -283,7 +309,7 @@ function buildParams(
   return params;
 }
 
-function convertMessages(_model: OpenAIModel, context: Context): ResponseInput {
+function convertMessages(context: NormalizedContext): ResponseInput {
   const input: ResponseInput = [];
 
   if (context.system && context.system.trim().length > 0) {
@@ -303,21 +329,22 @@ function convertMessages(_model: OpenAIModel, context: Context): ResponseInput {
     }
 
     if (msg.role === "assistant") {
-      const parts: AssistantPart[] =
-        typeof msg.content === "string" ? [{ type: "text", text: msg.content }] : msg.content;
-      for (const part of parts) {
+      for (const part of msg.content) {
         if (part.type === "thinking") {
-          if (!part.signature) continue;
-          try {
-            input.push(JSON.parse(part.signature));
-          } catch {
-            continue;
+          if (part.meta?.provider === "openai" && part.meta.type === "reasoning_item") {
+            input.push(part.meta.item as ResponseReasoningItem);
           }
           continue;
         }
 
         if (part.type === "text") {
           if (part.text.trim().length === 0) continue;
+
+          const id =
+            part.meta?.provider === "openai" && part.meta.type === "message_id"
+              ? part.meta.id
+              : `msg_${msgIndex++}`;
+
           input.push({
             type: "message",
             role: "assistant",
@@ -325,15 +352,20 @@ function convertMessages(_model: OpenAIModel, context: Context): ResponseInput {
               { type: "output_text", text: sanitizeSurrogates(part.text), annotations: [] },
             ],
             status: "completed",
-            id: part.signature || `msg_${msgIndex++}`,
+            id,
           } satisfies ResponseOutputMessage);
           continue;
         }
 
         if (part.type === "tool_call") {
+          const id =
+            part.meta?.provider === "openai" && part.meta.type === "function_call_item_id"
+              ? part.meta.id
+              : `fc_${msgIndex++}`;
+
           input.push({
             type: "function_call",
-            id: part.signature || `fc_${msgIndex++}`,
+            id,
             call_id: part.id,
             name: part.name,
             arguments: JSON.stringify(part.args),
@@ -360,7 +392,7 @@ function convertTools(tools: Tool[]) {
     type: "function" as const,
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters as any,
+    parameters: tool.parameters as Record<string, unknown>,
     strict: null,
   }));
 }
@@ -401,9 +433,7 @@ function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): Sto
     case "in_progress":
     case "queued":
       return "stop";
-    default: {
-      const _exhaustive: never = status;
-      throw new Error(`Unhandled OpenAI status: ${_exhaustive}`);
-    }
+    default:
+      return exhaustive(status);
   }
 }

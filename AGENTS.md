@@ -30,11 +30,11 @@ Context normalization lives in `src/stream.ts` and is designed to make histories
 - System messages: `context.system` plus any `messages[]` with `role: "system"` are merged into a single system string. System messages are removed from the regular message list.
 - Cross-provider assistant history:
   - If an assistant message does not match the target `{ provider, model }`, it is treated as provider-agnostic.
-  - `thinking` parts are dropped.
-  - `tool_call` parts are converted into a plain text transcript (`[iota tool_call] ...`) so the history remains understandable even when the target provider cannot round-trip the tool call.
+  - For provider-agnostic assistant messages, `thinking` parts are dropped.
+  - `tool_call` parts are preserved across providers and mapped to provider-native tool calls when making requests.
 - Tool results:
-  - If a `tool` message refers to a tool call id that exists in the target provider/model history, it is kept as a tool result.
-  - Otherwise, it is converted into a user transcript (`[iota tool_result] ...`) so the conversation stays consistent.
+  - `tool` messages are always preserved as tool results (never converted into user transcripts).
+  - `isError` defaults to `false`.
 
 ## Tool schema support
 
@@ -50,12 +50,12 @@ This is a deliberate compatibility subset across providers.
 
 - **OpenAI** (`src/providers/openai.ts`)
   - Uses the OpenAI **Responses API** streaming events.
-  - Reasoning is represented as `thinking` parts. For round-tripping, OpenAI reasoning items are stored in `AssistantPart.signature` as JSON.
+  - Reasoning is represented as `thinking` parts. For round-tripping, OpenAI reasoning items are stored in `AssistantPart.meta` (`{ provider: "openai", type: "reasoning_item", item: ... }`).
   - Tool call args stream incrementally and are parsed via `partial-json`.
 - **Anthropic** (`src/providers/anthropic.ts`)
   - Uses `@anthropic-ai/sdk` streaming events.
   - Tool call ids are sanitized to match Anthropic requirements (`sanitizeToolCallId()`), so do not assume ids are preserved byte-for-byte across providers.
-  - Thinking blocks are included only when `options.reasoning !== "none"` and are filtered from final output if they do not have a signature.
+  - Thinking blocks are included only when `options.reasoning !== "none"` and are filtered from final output if they do not have a provider signature in `AssistantPart.meta`.
 - **Gemini** (`src/providers/gemini.ts`)
   - Uses `@google/genai` interactions streaming.
   - Reasoning summaries are surfaced as `thinking` parts when enabled.
@@ -68,6 +68,8 @@ All providers fill `message.usage` and compute `message.usage.cost` via `calcula
 - `npm run build` - Build ESM + CJS to `dist/`
 
 **Style**: Biome (2-space indent, 100 line width). Types `PascalCase`, values/functions `camelCase`, files `lowercase.ts`.
+
+**TypeScript**: Prefer exhaustive `switch` handling for discriminated unions (all cases enforced by the type system). When switching on a union, explicitly handle every case and use `default: return exhaustive(value)` (from `src/utils/exhaustive.ts`) so missing cases become compile-time errors.
 
 ## Releasing
 

@@ -1,5 +1,6 @@
 import type { AssistantStream } from "./assistant-stream.js";
 import type { AnyModel, Model } from "./models.js";
+import { clampReasoningForModel } from "./models.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamGemini } from "./providers/gemini.js";
 import { streamOpenAI } from "./providers/openai.js";
@@ -9,14 +10,14 @@ import type {
   AssistantPart,
   Context,
   JsonSchema,
-  Message,
+  NormalizedContext,
+  NormalizedMessage,
   Provider,
-  ReasoningEffort,
+  ResolvedStreamOptions,
   StreamOptions,
   Tool,
-  ToolMessage,
-  Usage,
 } from "./types.js";
+import { exhaustive } from "./utils/exhaustive.js";
 
 export function stream(
   model: AnyModel,
@@ -26,11 +27,16 @@ export function stream(
   const apiKey = options.apiKey ?? getApiKey(model.provider);
   if (!apiKey) throw new Error(`Missing API key for provider: ${model.provider}`);
 
-  const reasoning = options.reasoning ?? "none";
+  const reasoning = clampReasoningForModel(model, options.reasoning ?? "none");
   const normalized = normalizeContextForTarget(model, context);
-  validateToolSchemas(normalized.tools);
 
-  const resolvedOptions: StreamOptions = {
+  if (!model.supports.tools && contextUsesTools(normalized)) {
+    throw new Error(`Model does not support tools: ${model.provider}/${model.id}`);
+  }
+
+  validateTools(normalized.tools);
+
+  const resolvedOptions: ResolvedStreamOptions = {
     ...options,
     apiKey,
     reasoning,
@@ -44,6 +50,8 @@ export function stream(
       return streamAnthropic(model, normalized, resolvedOptions);
     case "gemini":
       return streamGemini(model, normalized, resolvedOptions);
+    default:
+      return exhaustive(model);
   }
 }
 
@@ -56,6 +64,15 @@ export async function complete(
   return s.result();
 }
 
+export async function completeOrThrow(
+  model: AnyModel,
+  context: Context,
+  options?: StreamOptions,
+): Promise<AssistantMessage> {
+  const s = stream(model, context, options);
+  return s.resultOrThrow();
+}
+
 export function getApiKey(provider: Provider): string | undefined {
   switch (provider) {
     case "openai":
@@ -65,11 +82,11 @@ export function getApiKey(provider: Provider): string | undefined {
     case "gemini":
       return process.env.GEMINI_API_KEY;
     default:
-      return undefined;
+      return exhaustive(provider);
   }
 }
 
-function normalizeContextForTarget(target: Model, context: Context): Context {
+export function normalizeContextForTarget(target: Model, context: Context): NormalizedContext {
   const targetProvider = target.provider;
   const targetModel = target.id;
 
@@ -81,18 +98,14 @@ function normalizeContextForTarget(target: Model, context: Context): Context {
   }
   const system = systemParts.length > 0 ? systemParts.join("\n\n") : undefined;
 
-  const toolCallIds = new Set<string>();
-  for (const msg of context.messages) {
-    if (msg.role !== "assistant") continue;
-    if (msg.provider !== targetProvider || msg.model !== targetModel) continue;
-    for (const part of coerceAssistantContent(msg.content)) {
-      if (part.type === "tool_call") toolCallIds.add(part.id);
-    }
-  }
-
-  const messages: Message[] = [];
+  const messages: NormalizedMessage[] = [];
   for (const msg of context.messages) {
     if (msg.role === "system") continue;
+
+    if (msg.role === "user") {
+      messages.push(msg);
+      continue;
+    }
 
     if (msg.role === "assistant") {
       messages.push(normalizeAssistantMessage(targetProvider, targetModel, msg));
@@ -100,21 +113,14 @@ function normalizeContextForTarget(target: Model, context: Context): Context {
     }
 
     if (msg.role === "tool") {
-      if (toolCallIds.has(msg.toolCallId)) {
-        messages.push({ ...msg, isError: msg.isError ?? false });
-      } else {
-        messages.push({ role: "user", content: toolResultTranscript(msg) });
-      }
-      continue;
+      messages.push({ ...msg, isError: msg.isError ?? false });
     }
-
-    messages.push(msg);
   }
 
   return {
     system,
     messages: messages.filter((m) => {
-      if (m.role === "assistant") return coerceAssistantContent(m.content).length > 0;
+      if (m.role === "assistant") return m.content.length > 0;
       if (m.role === "user") return m.content.trim().length > 0;
       return true;
     }),
@@ -126,7 +132,7 @@ function normalizeAssistantMessage(
   targetProvider: Provider,
   targetModel: string,
   msg: AssistantMessageInput,
-): AssistantMessageInput {
+): Extract<NormalizedMessage, { role: "assistant" }> {
   const parts = coerceAssistantContent(msg.content);
 
   if (msg.provider === targetProvider && msg.model === targetModel) {
@@ -139,17 +145,14 @@ function normalizeAssistantMessage(
   const content: AssistantPart[] = [];
   for (const part of parts) {
     if (part.type === "text") {
-      content.push({ type: "text", text: part.text });
+      content.push({ type: "text", text: part.text, ...(part.meta ? { meta: part.meta } : {}) });
       continue;
     }
     if (part.type === "thinking") {
       continue;
     }
     if (part.type === "tool_call") {
-      content.push({
-        type: "text",
-        text: toolCallTranscript(part),
-      });
+      content.push({ ...part, args: part.args });
     }
   }
 
@@ -163,43 +166,46 @@ function coerceAssistantContent(content: AssistantMessageInput["content"]): Assi
   return typeof content === "string" ? [{ type: "text", text: content }] : content;
 }
 
-function toolCallTranscript(part: Extract<AssistantPart, { type: "tool_call" }>): string {
-  const args = safeJson(part.args);
-  return `[iota tool_call] name=${part.name} id=${part.id} args=${args}`;
-}
-
-function toolResultTranscript(msg: ToolMessage): string {
-  const isError = msg.isError ?? false;
-  return `[iota tool_result] name=${msg.toolName} id=${msg.toolCallId} isError=${String(isError)}\n${msg.content}`;
-}
-
-function safeJson(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "[unserializable]";
+function contextUsesTools(context: NormalizedContext): boolean {
+  if (context.tools && context.tools.length > 0) return true;
+  for (const m of context.messages) {
+    if (m.role === "tool") return true;
+    if (m.role === "assistant" && m.content.some((p) => p.type === "tool_call")) return true;
   }
+  return false;
 }
 
-export function emptyUsage(): Usage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: 0,
-    cost: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      total: 0,
-    },
-  };
-}
+const toolNameRe = /^[a-zA-Z0-9_-]{1,64}$/;
 
-export function clampReasoning(effort: ReasoningEffort): Exclude<ReasoningEffort, "xhigh"> {
-  return effort === "xhigh" ? "high" : effort;
+function validateTools(tools?: Tool[]): void {
+  if (!tools || tools.length === 0) return;
+
+  const names = new Set<string>();
+  for (const tool of tools) {
+    if (typeof tool.name !== "string" || tool.name.trim().length === 0) {
+      throw new Error("Invalid tool definition: tool.name must be a non-empty string");
+    }
+
+    if (!toolNameRe.test(tool.name)) {
+      throw new Error(
+        `Invalid tool definition: tool.name '${tool.name}' must match ${toolNameRe.source} and be <= 64 chars`,
+      );
+    }
+
+    if (names.has(tool.name)) {
+      throw new Error(`Invalid tool definition: duplicate tool name '${tool.name}'`);
+    }
+
+    names.add(tool.name);
+
+    if (tool.description !== undefined && typeof tool.description !== "string") {
+      throw new Error(
+        `Invalid tool definition: tool.description for '${tool.name}' must be a string`,
+      );
+    }
+
+    validateJsonSchema(tool.parameters, `tool:${tool.name}`, true);
+  }
 }
 
 const supportedSchemaKeys = new Set([
@@ -239,14 +245,6 @@ const unsupportedSchemaKeys = new Set([
   "minProperties",
   "maxProperties",
 ]);
-
-function validateToolSchemas(tools?: Tool[]): void {
-  if (!tools || tools.length === 0) return;
-
-  for (const tool of tools) {
-    validateJsonSchema(tool.parameters, `tool:${tool.name}`, true);
-  }
-}
 
 function validateJsonSchema(schema: JsonSchema, path: string, isRoot: boolean): void {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
@@ -307,6 +305,20 @@ function validateJsonSchema(schema: JsonSchema, path: string, isRoot: boolean): 
   if (schema.required !== undefined) {
     if (!Array.isArray(schema.required) || schema.required.some((v) => typeof v !== "string")) {
       throw new Error(`Invalid tool JSON Schema at ${path}.required: expected string[]`);
+    }
+
+    if (
+      schema.properties &&
+      typeof schema.properties === "object" &&
+      !Array.isArray(schema.properties)
+    ) {
+      for (const key of schema.required as string[]) {
+        if (!(key in (schema.properties as Record<string, unknown>))) {
+          throw new Error(
+            `Invalid tool JSON Schema at ${path}.required: '${key}' is not present in properties`,
+          );
+        }
+      }
     }
   }
 

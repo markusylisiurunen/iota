@@ -1,20 +1,20 @@
 import { randomInt } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import type { AnyModel } from "../src/models.js";
 import { getModel } from "../src/models.js";
+import { stream } from "../src/stream.js";
+import type {
+  AssistantMessage,
+  AssistantPart,
+  AssistantStreamEvent,
+  Context,
+  Tool,
+  ToolMessage,
+} from "../src/types.js";
 
 const smokeEnabled = process.env.IOTA_SMOKE === "1";
 
-let streamFn: undefined | ((model: any, context: any, options?: any) => any);
-
-async function stream(model: any, context: any, options?: any) {
-  if (!streamFn) {
-    const mod = await import("../dist/index.js");
-    streamFn = mod.stream;
-  }
-  return streamFn(model, context, options);
-}
-
-const tools = [
+const tools: Tool[] = [
   {
     name: "random_number",
     description: "Generate a random integer in [min, max] inclusive.",
@@ -41,30 +41,32 @@ const tools = [
       additionalProperties: false,
     },
   },
-] as const;
+];
 
 function itIf(condition: boolean, name: string, fn: () => Promise<void>) {
   return (condition ? it.concurrent : it.skip)(name, fn, 30_000);
 }
 
-function toolCalls(message: { content: Array<{ type: string }> }) {
-  return (message.content as any[]).filter((p) => p.type === "tool_call");
+type ToolCallPart = Extract<AssistantPart, { type: "tool_call" }>;
+
+function toolCalls(message: Pick<AssistantMessage, "content">): ToolCallPart[] {
+  return message.content.filter((p): p is ToolCallPart => p.type === "tool_call");
 }
 
-function textContent(message: { content: Array<{ type: string; text?: string }> }) {
+function textContent(message: Pick<AssistantMessage, "content">) {
   return message.content
-    .filter((p) => p.type === "text")
-    .map((p) => p.text ?? "")
+    .filter((p): p is Extract<AssistantPart, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
     .join("");
 }
 
-async function runTurn(model: any, context: any) {
+async function runTurn(model: AnyModel, context: Context) {
   const s = await stream(model, context, {
     maxTokens: 8192,
     reasoning: "low",
   });
 
-  const events: any[] = [];
+  const events: AssistantStreamEvent[] = [];
   for await (const e of s) events.push(e);
   const message = await s.result();
 
@@ -74,7 +76,7 @@ async function runTurn(model: any, context: any) {
   return { events, message };
 }
 
-function parseFirstJsonObject(text: string) {
+function parseFirstJsonObject(text: string): unknown {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) return null;
@@ -87,15 +89,17 @@ function parseFirstJsonObject(text: string) {
   }
 }
 
-function numberFromToolResult(toolMsg: { content: string }, key: string) {
-  const parsed = JSON.parse(toolMsg.content);
-  const v = parsed?.[key];
+function numberFromToolResult(toolMsg: ToolMessage, key: string) {
+  const parsed: unknown = JSON.parse(toolMsg.content);
+  if (!parsed || typeof parsed !== "object") throw new Error("Unexpected tool result JSON");
+
+  const v = (parsed as Record<string, unknown>)[key];
   expect(typeof v).toBe("number");
   return v as number;
 }
 
-async function runScenario(model: any) {
-  const context: any = {
+async function runScenario(model: AnyModel) {
+  const context: Context = {
     system: "You are a deterministic tool-using agent. You must follow the instructions exactly.",
     tools,
     messages: [
@@ -119,12 +123,15 @@ async function runScenario(model: any) {
   expect(calls1.filter((c) => c.name === "random_number").length).toBe(2);
   expect(calls1.filter((c) => c.name === "multiply").length).toBe(0);
 
-  const randomResults = await Promise.all(
+  const randomResults: ToolMessage[] = await Promise.all(
     calls1.map(async (call) => {
       expect(call.name).toBe("random_number");
 
-      const minRaw = Number(call.args?.min);
-      const maxRaw = Number(call.args?.max);
+      if (!call.args || typeof call.args !== "object") throw new Error("Unexpected tool args");
+
+      const args = call.args as Record<string, unknown>;
+      const minRaw = Number(args.min);
+      const maxRaw = Number(args.max);
       expect(Number.isFinite(minRaw)).toBe(true);
       expect(Number.isFinite(maxRaw)).toBe(true);
 
@@ -158,11 +165,15 @@ async function runScenario(model: any) {
   const a = numberFromToolResult(randomResults[0], "value");
   const b = numberFromToolResult(randomResults[1], "value");
 
-  expect(Number(calls2[0].args?.a)).toBe(a);
-  expect(Number(calls2[0].args?.b)).toBe(b);
+  if (!calls2[0].args || typeof calls2[0].args !== "object")
+    throw new Error("Unexpected tool args");
+  const args2 = calls2[0].args as Record<string, unknown>;
+
+  expect(Number(args2.a)).toBe(a);
+  expect(Number(args2.b)).toBe(b);
 
   const product = a * b;
-  const multiplyResult = {
+  const multiplyResult: ToolMessage = {
     role: "tool",
     toolCallId: calls2[0].id,
     toolName: calls2[0].name,
@@ -175,9 +186,11 @@ async function runScenario(model: any) {
 
   const parsed = parseFirstJsonObject(textContent(turn3.message));
   expect(parsed).not.toBeNull();
-  expect(parsed.a).toBe(a);
-  expect(parsed.b).toBe(b);
-  expect(parsed.product).toBe(product);
+
+  const obj = parsed as Record<string, unknown>;
+  expect(obj.a).toBe(a);
+  expect(obj.b).toBe(b);
+  expect(obj.product).toBe(product);
 }
 
 const cases = [

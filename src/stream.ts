@@ -373,6 +373,8 @@ const supportedSchemaKeys = new Set([
   "properties",
   "required",
   "enum",
+  "minimum",
+  "maximum",
   "items",
   "additionalProperties",
 ]);
@@ -391,8 +393,6 @@ const unsupportedSchemaKeys = new Set([
   "if",
   "then",
   "else",
-  "minimum",
-  "maximum",
   "exclusiveMinimum",
   "exclusiveMaximum",
   "multipleOf",
@@ -501,6 +501,48 @@ function validateJsonSchema(schema: JsonSchema, path: string, isRoot: boolean): 
       throw new Error(`Invalid tool JSON Schema at ${path}.items: only valid when type is 'array'`);
     }
     validateJsonSchema(schema.items as JsonSchema, `${path}.items`, false);
+  }
+
+  if (schema.minimum !== undefined) {
+    if (schema.type !== "number" && schema.type !== "integer") {
+      throw new Error(
+        `Invalid tool JSON Schema at ${path}.minimum: only valid when type is 'number' or 'integer'`,
+      );
+    }
+
+    const min = schema.minimum;
+    if (typeof min !== "number" || !Number.isFinite(min)) {
+      throw new Error(`Invalid tool JSON Schema at ${path}.minimum: expected a finite number`);
+    }
+    if (schema.type === "integer" && !Number.isInteger(min)) {
+      throw new Error(`Invalid tool JSON Schema at ${path}.minimum: expected an integer`);
+    }
+  }
+
+  if (schema.maximum !== undefined) {
+    if (schema.type !== "number" && schema.type !== "integer") {
+      throw new Error(
+        `Invalid tool JSON Schema at ${path}.maximum: only valid when type is 'number' or 'integer'`,
+      );
+    }
+
+    const max = schema.maximum;
+    if (typeof max !== "number" || !Number.isFinite(max)) {
+      throw new Error(`Invalid tool JSON Schema at ${path}.maximum: expected a finite number`);
+    }
+    if (schema.type === "integer" && !Number.isInteger(max)) {
+      throw new Error(`Invalid tool JSON Schema at ${path}.maximum: expected an integer`);
+    }
+  }
+
+  if (schema.minimum !== undefined && schema.maximum !== undefined) {
+    const min = schema.minimum;
+    const max = schema.maximum;
+    if (typeof min === "number" && typeof max === "number" && min > max) {
+      throw new Error(
+        `Invalid tool JSON Schema at ${path}: minimum (${min}) cannot be greater than maximum (${max})`,
+      );
+    }
   }
 
   if (schema.additionalProperties !== undefined) {

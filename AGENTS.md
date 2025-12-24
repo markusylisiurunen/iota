@@ -114,7 +114,9 @@ Validation in `src/stream.ts` ensures cross-provider compatibility.
 
 **Tool names**: Must match `/^[a-zA-Z0-9_-]{1,64}$/`, no duplicates allowed.
 
-**JSON Schema**: Root must have `type: "object"` with `properties`. Allowed keywords are `type`, `description`, `properties`, `required`, `enum`, `items`, and `additionalProperties`. Rejected keywords include `$ref`, `definitions`, `$defs`, `oneOf`, `anyOf`, `allOf`, `pattern`, `format`, `minimum`, `maximum`, and other constraints.
+**JSON Schema**: Root must have `type: "object"` with `properties`. Allowed keywords are `type`, `description`, `properties`, `required`, `enum`, `minimum`, `maximum`, `items`, and `additionalProperties`. Rejected keywords include `$ref`, `definitions`, `$defs`, `oneOf`, `anyOf`, `allOf`, `pattern`, `format`, and other constraints.
+
+`minimum`/`maximum` are supported for `type: "number"` and `type: "integer"` schemas.
 
 This is a deliberate compatibility subset. All providers support these keywords; advanced JSON Schema features are not portable.
 

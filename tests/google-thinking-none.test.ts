@@ -42,13 +42,13 @@ import { getModel } from "../src/models.js";
 import { stream } from "../src/stream.js";
 import type { Context } from "../src/types.js";
 
-describe("gemini thinking config for reasoning:none", () => {
+describe("google thinking config for reasoning:none", () => {
   beforeEach(() => {
     capturedParams = undefined;
   });
 
   it("sets thinkingBudget=0 for flash", async () => {
-    const model = getModel("gemini", "gemini-3-flash-preview");
+    const model = getModel("google", "gemini-3-flash-preview");
 
     const context: Context = {
       messages: [{ role: "user", content: "hello" }],
@@ -64,7 +64,7 @@ describe("gemini thinking config for reasoning:none", () => {
   });
 
   it("sets thinkingLevel=LOW for pro", async () => {
-    const model = getModel("gemini", "gemini-3-pro-preview");
+    const model = getModel("google", "gemini-3-pro-preview");
 
     const context: Context = {
       messages: [{ role: "user", content: "hello" }],

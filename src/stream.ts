@@ -3,7 +3,7 @@ import type { AssistantStream } from "./assistant-stream.js";
 import type { AnyModel, Model } from "./models.js";
 import { clampReasoningForModel } from "./models.js";
 import { streamAnthropic } from "./providers/anthropic.js";
-import { streamGemini } from "./providers/gemini.js";
+import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
 import type {
   AgentOptions,
@@ -53,8 +53,8 @@ export function stream(
       return streamOpenAI(model, normalized, resolvedOptions);
     case "anthropic":
       return streamAnthropic(model, normalized, resolvedOptions);
-    case "gemini":
-      return streamGemini(model, normalized, resolvedOptions);
+    case "google":
+      return streamGoogle(model, normalized, resolvedOptions);
     default:
       return exhaustive(model);
   }
@@ -236,8 +236,8 @@ export function getApiKey(provider: Provider): string | undefined {
       return process.env.OPENAI_API_KEY;
     case "anthropic":
       return process.env.ANTHROPIC_API_KEY;
-    case "gemini":
-      return process.env.GEMINI_API_KEY;
+    case "google":
+      return process.env.GOOGLE_API_KEY;
     default:
       return exhaustive(provider);
   }

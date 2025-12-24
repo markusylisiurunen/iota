@@ -7,8 +7,8 @@ export {
   calculateCost,
   clampReasoning,
   clampReasoningForModel,
-  geminiModels,
   getModel,
+  googleModels,
   openaiModels,
   supportsXhigh,
 } from "./models.js";

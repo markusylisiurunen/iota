@@ -115,9 +115,9 @@ export const anthropicModels = {
 export type AnthropicModelId = keyof typeof anthropicModels;
 export type AnthropicModel = (typeof anthropicModels)[AnthropicModelId];
 
-export const geminiModels = {
+export const googleModels = {
   "gemini-3-pro-preview": {
-    provider: "gemini",
+    provider: "google",
     id: "gemini-3-pro-preview",
     name: "Gemini 3 Pro Preview",
     contextWindow: 1000000,
@@ -129,9 +129,9 @@ export const geminiModels = {
       cacheReadPer1M: 0.2,
       cacheWritePer1M: 0,
     },
-  } as const satisfies Model<"gemini">,
+  } as const satisfies Model<"google">,
   "gemini-3-flash-preview": {
-    provider: "gemini",
+    provider: "google",
     id: "gemini-3-flash-preview",
     name: "Gemini 3 Flash Preview",
     contextWindow: 1048576,
@@ -143,17 +143,17 @@ export const geminiModels = {
       cacheReadPer1M: 0.05,
       cacheWritePer1M: 0,
     },
-  } as const satisfies Model<"gemini">,
+  } as const satisfies Model<"google">,
 } as const;
 
-export type GeminiModelId = keyof typeof geminiModels;
-export type GeminiModel = (typeof geminiModels)[GeminiModelId];
+export type GoogleModelId = keyof typeof googleModels;
+export type GoogleModel = (typeof googleModels)[GoogleModelId];
 
-export type AnyModel = OpenAIModel | AnthropicModel | GeminiModel;
+export type AnyModel = OpenAIModel | AnthropicModel | GoogleModel;
 
 export function getModel(provider: "openai", id: OpenAIModelId): OpenAIModel;
 export function getModel(provider: "anthropic", id: AnthropicModelId): AnthropicModel;
-export function getModel(provider: "gemini", id: GeminiModelId): GeminiModel;
+export function getModel(provider: "google", id: GoogleModelId): GoogleModel;
 export function getModel(provider: Provider, id: string): AnyModel {
   switch (provider) {
     case "openai": {
@@ -166,9 +166,9 @@ export function getModel(provider: Provider, id: string): AnyModel {
       if (!m) throw new Error(`Unknown Anthropic model: ${id}`);
       return m;
     }
-    case "gemini": {
-      const m = (geminiModels as Record<string, AnyModel>)[id];
-      if (!m) throw new Error(`Unknown Gemini model: ${id}`);
+    case "google": {
+      const m = (googleModels as Record<string, AnyModel>)[id];
+      if (!m) throw new Error(`Unknown Google model: ${id}`);
       return m;
     }
     default:

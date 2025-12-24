@@ -142,9 +142,9 @@ const cases = [
     env: "ANTHROPIC_API_KEY",
   },
   {
-    name: "gemini/gemini-3-flash-preview",
-    model: getModel("gemini", "gemini-3-flash-preview"),
-    env: "GEMINI_API_KEY",
+    name: "google/gemini-3-flash-preview",
+    model: getModel("google", "gemini-3-flash-preview"),
+    env: "GOOGLE_API_KEY",
   },
 ] as const;
 

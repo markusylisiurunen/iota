@@ -1,12 +1,12 @@
 # Iota
 
-Multi-provider LLM streaming library supporting OpenAI, Anthropic, and Gemini. Provides a unified interface for streaming completions with tool calling, reasoning summaries (extended thinking), and token usage with cost tracking.
+Multi-provider LLM streaming library supporting OpenAI, Anthropic, and Google. Provides a unified interface for streaming completions with tool calling, reasoning summaries (extended thinking), and token usage with cost tracking.
 
 ## Architecture
 
 The library is organized around a streaming pipeline that normalizes cross-provider differences behind a unified event interface.
 
-`stream()` in `src/stream.ts` is the main entry point. It first normalizes the conversation context via `normalizeContextForTarget()`, making message history portable across providers by stripping provider-specific metadata and merging system messages. It then validates any tool definitions against a strict JSON Schema subset that all providers support. Finally, it dispatches to a provider-specific implementation based on the model: `streamOpenAI()`, `streamAnthropic()`, or `streamGemini()`.
+`stream()` in `src/stream.ts` is the main entry point. It first normalizes the conversation context via `normalizeContextForTarget()`, making message history portable across providers by stripping provider-specific metadata and merging system messages. It then validates any tool definitions against a strict JSON Schema subset that all providers support. Finally, it dispatches to a provider-specific implementation based on the model: `streamOpenAI()`, `streamAnthropic()`, or `streamGoogle()`.
 
 Each provider adapter translates the normalized context into the provider's native API format, initiates a streaming request, and processes incoming chunks. Providers don't push events directly to the stream. Instead, they use a `StreamController` which maintains the in-progress `AssistantMessage` state and emits structured events (`part_start`, `part_delta`, `part_end`, etc.) to an `AssistantStream`.
 
@@ -30,7 +30,7 @@ Consumers iterate over the `AssistantStream` using `for await...of` to receive e
 
 **`src/providers/anthropic.ts`**: Anthropic Messages API adapter.
 
-**`src/providers/gemini.ts`**: Google Gemini API adapter.
+**`src/providers/google.ts`**: Google Gemini API adapter.
 
 **`src/utils/json.ts`**: Safe JSON parsing for partial streaming data.
 
@@ -130,7 +130,7 @@ Uses the **Responses API** (`client.responses.create`), not Chat Completions. Re
 
 Uses Messages API with beta headers for streaming features. The `sanitizeToolCallId()` function replaces non-alphanumeric characters with `_` to meet Anthropic's ID requirements. Thinking blocks require a `signature` for round-tripping, stored in `meta`. Reasoning budget is calculated via `anthropicBudget()` based on effort level and max tokens. Beta headers used: `interleaved-thinking-2025-05-14`, `fine-grained-tool-streaming-2025-05-14`. Key events handled: `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`.
 
-### Gemini (`src/providers/gemini.ts`)
+### Google (`src/providers/google.ts`)
 
 Uses `@google/genai` streaming. Reasoning is enabled via `thinkingConfig.includeThoughts`. The `thoughtSignature` is stored in `meta` for round-tripping. Tool call IDs are generated if not provided by the API.
 
@@ -148,7 +148,7 @@ Message history accumulates across turns. Each `AssistantMessage` and `ToolMessa
 
 `StreamOptions` for `stream()`:
 
-- **`apiKey`** (`string?`): Provider API key. Falls back to `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` environment variables.
+- **`apiKey`** (`string?`): Provider API key. Falls back to `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GOOGLE_API_KEY` environment variables.
 - **`temperature`** (`number?`): Sampling temperature.
 - **`maxTokens`** (`number?`): Max output tokens. Defaults to `model.maxOutputTokens`.
 - **`reasoning`** (`ReasoningEffort?`): One of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`. Clamped to model capabilities.
@@ -180,7 +180,7 @@ Exported from `src/index.ts`:
 
 **Classes**: `AssistantStream`, `AgentStream`.
 
-**Data**: `openaiModels`, `anthropicModels`, `geminiModels`.
+**Data**: `openaiModels`, `anthropicModels`, `googleModels`.
 
 **Types**: All from `src/types.ts` and `src/models.ts`.
 

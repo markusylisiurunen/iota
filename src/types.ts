@@ -1,4 +1,4 @@
-export type Provider = "openai" | "anthropic" | "gemini";
+export type Provider = "openai" | "anthropic" | "google";
 
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -26,7 +26,7 @@ export type AssistantPartMeta =
   | { provider: "openai"; type: "message_id"; id: string }
   | { provider: "openai"; type: "function_call_item_id"; id: string }
   | { provider: "anthropic"; type: "thinking_signature"; signature: string }
-  | { provider: "gemini"; type: "thought_signature"; signature: string };
+  | { provider: "google"; type: "thought_signature"; signature: string };
 
 export type AssistantPart =
   | { type: "text"; text: string; meta?: AssistantPartMeta }

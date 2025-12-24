@@ -1,6 +1,6 @@
 # iota
 
-a small typescript library for streaming chat completions across **openai**, **anthropic**, and **gemini**, with a unified event stream, tool calling parts, reasoning summaries (when available), and token usage + cost tracking.
+a small typescript library for streaming chat completions across **openai**, **anthropic**, and **google**, with a unified event stream, tool calling parts, reasoning summaries (when available), and token usage + cost tracking.
 
 ## installation
 
@@ -15,7 +15,7 @@ iota looks up API keys from environment variables by default:
 ```sh
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
-export GEMINI_API_KEY=...
+export GOOGLE_API_KEY=...
 ```
 
 you can also pass a key explicitly per call via `stream(..., { apiKey })`.
@@ -100,12 +100,12 @@ set `options.reasoning` to request reasoning summaries when supported:
 
 - openai: uses responses api reasoning summaries
 - anthropic: uses `thinking` blocks (budget depends on `reasoning` + `maxTokens`)
-- gemini: uses thinking summaries + a provider-specific thinking level
+- google: uses thinking summaries + a provider-specific thinking level
 
 ```ts
 import { getModel, complete } from "@markusylisiurunen/iota";
 
-const model = getModel("gemini", "gemini-3-pro-preview");
+const model = getModel("google", "gemini-3-pro-preview");
 
 const msg = await complete(
   model,

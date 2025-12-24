@@ -1,8 +1,8 @@
 import {
   type Content,
   FinishReason,
-  type Tool as GeminiTool,
   GoogleGenAI,
+  type Tool as GoogleTool,
   type HttpOptions,
   type Part,
   type Schema,
@@ -25,15 +25,15 @@ import type {
 import { exhaustive } from "../utils/exhaustive.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
-type GeminiModel = Extract<AnyModel, { provider: "gemini" }>;
+type GoogleModel = Extract<AnyModel, { provider: "google" }>;
 
-const geminiHttpOptions: HttpOptions = {
+const googleHttpOptions: HttpOptions = {
   baseUrl: "https://generativelanguage.googleapis.com",
   apiVersion: "v1beta",
 };
 
-export function streamGemini(
-  model: GeminiModel,
+export function streamGoogle(
+  model: GoogleModel,
   context: NormalizedContext,
   options: ResolvedStreamOptions,
 ): AssistantStream {
@@ -46,11 +46,11 @@ export function streamGemini(
     try {
       const client = new GoogleGenAI({
         apiKey: options.apiKey,
-        httpOptions: geminiHttpOptions,
+        httpOptions: googleHttpOptions,
       });
 
       const params = buildParams(model, context, options);
-      const geminiStream = await client.models.generateContentStream(params);
+      const googleStream = await client.models.generateContentStream(params);
 
       let currentIndex: number | null = null;
       let currentType: "text" | "thinking" | null = null;
@@ -71,7 +71,7 @@ export function streamGemini(
         currentType = null;
       };
 
-      for await (const chunk of geminiStream) {
+      for await (const chunk of googleStream) {
         const candidate = chunk.candidates?.[0];
 
         if (candidate?.content?.parts) {
@@ -94,7 +94,7 @@ export function streamGemini(
                 part.text += delta;
                 if (typeof p.thoughtSignature === "string") {
                   part.meta = {
-                    provider: "gemini",
+                    provider: "google",
                     type: "thought_signature",
                     signature: p.thoughtSignature,
                   };
@@ -117,7 +117,7 @@ export function streamGemini(
 
               if (typeof p.thoughtSignature === "string") {
                 toolCall.meta = {
-                  provider: "gemini",
+                  provider: "google",
                   type: "thought_signature",
                   signature: p.thoughtSignature,
                 };
@@ -135,7 +135,7 @@ export function streamGemini(
         }
 
         if (chunk.usageMetadata) {
-          ctrl.setUsage(usageFromGemini(chunk.usageMetadata));
+          ctrl.setUsage(usageFromGoogle(chunk.usageMetadata));
         }
       }
 
@@ -150,7 +150,7 @@ export function streamGemini(
 }
 
 function buildParams(
-  model: GeminiModel,
+  model: GoogleModel,
   context: NormalizedContext,
   options: ResolvedStreamOptions,
 ) {
@@ -188,7 +188,7 @@ function buildParams(
 
       const effort: Exclude<ReasoningEffort, "none" | "xhigh"> =
         reasoning === "xhigh" ? "high" : reasoning;
-      const thinkingLevel = geminiThinkingLevel(model.id, effort);
+      const thinkingLevel = googleThinkingLevel(model.id, effort);
       if (thinkingLevel) thinkingConfig.thinkingLevel = thinkingLevel;
     }
 
@@ -233,7 +233,7 @@ function convertMessages(context: NormalizedContext): Content[] {
 
             case "thinking": {
               if (part.text.trim().length === 0) continue;
-              if (part.meta?.provider !== "gemini" || part.meta.type !== "thought_signature") {
+              if (part.meta?.provider !== "google" || part.meta.type !== "thought_signature") {
                 continue;
               }
 
@@ -254,7 +254,7 @@ function convertMessages(context: NormalizedContext): Content[] {
                 },
               };
 
-              if (part.meta?.provider === "gemini" && part.meta.type === "thought_signature") {
+              if (part.meta?.provider === "google" && part.meta.type === "thought_signature") {
                 p.thoughtSignature = part.meta.signature;
               }
 
@@ -297,7 +297,7 @@ function convertMessages(context: NormalizedContext): Content[] {
   return contents;
 }
 
-function convertTools(tools: Tool[]): GeminiTool[] | undefined {
+function convertTools(tools: Tool[]): GoogleTool[] | undefined {
   if (tools.length === 0) return undefined;
 
   return [
@@ -325,7 +325,7 @@ function resolveToolCallId(
   return id;
 }
 
-function geminiThinkingLevel(modelId: string, effort: Exclude<ReasoningEffort, "none" | "xhigh">) {
+function googleThinkingLevel(modelId: string, effort: Exclude<ReasoningEffort, "none" | "xhigh">) {
   if (modelId.includes("3-pro")) {
     switch (effort) {
       case "minimal":
@@ -368,7 +368,7 @@ function mapStopReason(reason: FinishReason | string): StopReason {
   }
 }
 
-function usageFromGemini(u: UsageMetadata): Usage {
+function usageFromGoogle(u: UsageMetadata): Usage {
   const cached = u.cachedContentTokenCount || 0;
   const toolUsePrompt = u.toolUsePromptTokenCount || 0;
   const input = Math.max(0, (u.promptTokenCount || 0) - cached) + toolUsePrompt;

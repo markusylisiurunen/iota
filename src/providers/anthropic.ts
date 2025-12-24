@@ -72,7 +72,7 @@ export function streamAnthropic(
               type: "tool_call",
               id: event.content_block.id,
               name: event.content_block.name,
-              args: event.content_block.input as Record<string, unknown>,
+              args: {},
             };
             const idx = ctrl.addPart(part);
             contentIndexByBlockIndex.set(event.index, idx);
@@ -96,7 +96,6 @@ export function streamAnthropic(
             const next = current + event.delta.partial_json;
             toolCallPartialJsonByIndex.set(idx, next);
 
-            part.args = parseStreamingJson(next);
             ctrl.delta(idx, event.delta.partial_json);
           } else if (event.delta.type === "signature_delta" && part.type === "thinking") {
             const current = thinkingSignatureByIndex.get(idx) ?? "";

@@ -51,7 +51,7 @@ This is a deliberate compatibility subset across providers.
 - **OpenAI** (`src/providers/openai.ts`)
   - Uses the OpenAI **Responses API** streaming events.
   - Reasoning is represented as `thinking` parts. For round-tripping, OpenAI reasoning items are stored in `AssistantPart.meta` (`{ provider: "openai", type: "reasoning_item", item: ... }`).
-  - Tool call args stream incrementally and are parsed via `partial-json`.
+  - Tool call args are accumulated during streaming and parsed only once fully received.
 - **Anthropic** (`src/providers/anthropic.ts`)
   - Uses `@anthropic-ai/sdk` streaming events.
   - Tool call ids are sanitized to match Anthropic requirements (`sanitizeToolCallId()`), so do not assume ids are preserved byte-for-byte across providers.

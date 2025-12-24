@@ -1,18 +1,11 @@
-import { parse as partialParse } from "partial-json";
-
-export function parseStreamingJson<T = unknown>(partialJson: string | undefined): T {
-  if (!partialJson || partialJson.trim() === "") {
+export function parseStreamingJson<T = unknown>(json: string | undefined): T {
+  if (!json || json.trim() === "") {
     return {} as T;
   }
 
   try {
-    return JSON.parse(partialJson) as T;
+    return JSON.parse(json) as T;
   } catch {
-    try {
-      const result = partialParse(partialJson);
-      return (result ?? {}) as T;
-    } catch {
-      return {} as T;
-    }
+    return {} as T;
   }
 }

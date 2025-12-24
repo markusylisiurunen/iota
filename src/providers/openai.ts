@@ -20,7 +20,6 @@ import type {
   Usage,
 } from "../types.js";
 import { exhaustive } from "../utils/exhaustive.js";
-import { parseStreamingJson } from "../utils/json.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
 type OpenAIModel = Extract<AnyModel, { provider: "openai" }>;
@@ -109,9 +108,6 @@ export function streamOpenAI(
 
             const initial = item.arguments || "";
             toolCallArgsJsonByIndex.set(idx, initial);
-            if (initial.trim().length > 0) {
-              part.args = parseStreamingJson(initial);
-            }
 
             return;
           }
@@ -182,7 +178,6 @@ export function streamOpenAI(
           const next = current + event.delta;
           toolCallArgsJsonByIndex.set(idx, next);
 
-          part.args = parseStreamingJson(next);
           ctrl.delta(idx, event.delta);
           return;
         }
@@ -269,7 +264,7 @@ function parseFinalToolArgs(item: ResponseFunctionToolCall): unknown {
   try {
     return JSON.parse(raw);
   } catch {
-    return parseStreamingJson(raw);
+    return {};
   }
 }
 

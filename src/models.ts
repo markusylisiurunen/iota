@@ -63,8 +63,8 @@ const gpt52 = {
   provider: "openai",
   id: "gpt-5.2",
   name: "GPT-5.2",
-  contextWindow: 128000,
-  maxOutputTokens: 16384,
+  contextWindow: 400000,
+  maxOutputTokens: 128000,
   supports: { reasoning: true, tools: true, reasoningXhigh: true },
   pricing: {
     inputPer1M: 1.75,
@@ -85,7 +85,7 @@ export const anthropicModels = {
   "opus-4.5": {
     provider: "anthropic",
     id: "claude-opus-4-5",
-    name: "Claude Opus 4.5 (latest)",
+    name: "Claude Opus 4.5",
     contextWindow: 200000,
     maxOutputTokens: 64000,
     supports: { reasoning: true, tools: true, reasoningXhigh: true },
@@ -99,7 +99,7 @@ export const anthropicModels = {
   "haiku-4.5": {
     provider: "anthropic",
     id: "claude-haiku-4-5",
-    name: "Claude Haiku 4.5 (latest)",
+    name: "Claude Haiku 4.5",
     contextWindow: 200000,
     maxOutputTokens: 64000,
     supports: { reasoning: true, tools: true, reasoningXhigh: true },
@@ -120,8 +120,8 @@ export const googleModels = {
     provider: "google",
     id: "gemini-3-pro-preview",
     name: "Gemini 3 Pro Preview",
-    contextWindow: 1000000,
-    maxOutputTokens: 64000,
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
     supports: { reasoning: true, tools: true, reasoningXhigh: false },
     pricing: {
       inputPer1M: 2,

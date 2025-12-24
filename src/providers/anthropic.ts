@@ -331,15 +331,41 @@ function convertMessages(context: NormalizedContext): MessageParam[] {
     }
   }
 
-  const lastMessage = out.at(-1);
-  if (lastMessage?.role === "user" && Array.isArray(lastMessage.content)) {
-    const lastBlock = lastMessage.content.at(-1);
+  let lastUserIndex = -1;
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i]?.role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+
+  const lastUser = out[lastUserIndex];
+  if (!lastUser || lastUser.role !== "user") return out;
+
+  if (typeof lastUser.content === "string") {
+    out[lastUserIndex] = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: lastUser.content,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    };
+
+    return out;
+  }
+
+  if (Array.isArray(lastUser.content)) {
+    const lastBlock = lastUser.content.at(-1);
     if (!lastBlock) return out;
 
     switch (lastBlock.type) {
       case "text":
       case "image":
       case "tool_result":
+      case "tool_use":
         lastBlock.cache_control = { type: "ephemeral" };
         break;
       default:

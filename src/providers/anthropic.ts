@@ -374,43 +374,26 @@ function sanitizeToolCallId(id: string): string {
 }
 
 function anthropicBudget(effort: Exclude<ReasoningEffort, "none">, maxTokens?: number): number {
-  const clamp = (n: number) => Math.max(128, Math.min(8192, n));
+  const desired = (() => {
+    switch (effort) {
+      case "minimal":
+        return 1024;
+      case "low":
+        return 8192;
+      case "medium":
+        return 16384;
+      case "high":
+      case "xhigh":
+        return 32768;
+      default:
+        return exhaustive(effort);
+    }
+  })();
 
-  if (typeof maxTokens === "number") {
-    const ratio = (() => {
-      switch (effort) {
-        case "minimal":
-          return 0.1;
-        case "low":
-          return 0.2;
-        case "medium":
-          return 0.3;
-        case "high":
-          return 0.5;
-        case "xhigh":
-          return 0.7;
-        default:
-          return exhaustive(effort);
-      }
-    })();
+  if (typeof maxTokens !== "number") return desired;
 
-    return clamp(Math.round(maxTokens * ratio));
-  }
-
-  switch (effort) {
-    case "minimal":
-      return 256;
-    case "low":
-      return 512;
-    case "medium":
-      return 1024;
-    case "high":
-      return 2048;
-    case "xhigh":
-      return 4096;
-    default:
-      return exhaustive(effort);
-  }
+  const upper = Math.max(0, Math.floor(maxTokens * 0.8));
+  return Math.min(desired, upper);
 }
 
 function mapStopReason(reason: AnthropicStopReason): StopReason {

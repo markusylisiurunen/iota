@@ -170,12 +170,27 @@ function buildParams(
   }
 
   const reasoning = options.reasoning ?? "none";
-  if (model.supports.reasoning && reasoning !== "none") {
-    const thinkingConfig: ThinkingConfig = { includeThoughts: true };
+  if (model.supports.reasoning) {
+    const thinkingConfig: ThinkingConfig = {};
 
-    const effort = reasoning === "xhigh" ? "high" : reasoning;
-    const thinkingLevel = geminiThinkingLevel(model.id, effort);
-    if (thinkingLevel) thinkingConfig.thinkingLevel = thinkingLevel;
+    if (reasoning === "none") {
+      thinkingConfig.includeThoughts = false;
+
+      if (model.id.includes("3-flash")) {
+        thinkingConfig.thinkingBudget = 0;
+      } else if (model.id.includes("3-pro")) {
+        thinkingConfig.thinkingLevel = ThinkingLevel.LOW;
+      } else {
+        thinkingConfig.thinkingBudget = 0;
+      }
+    } else {
+      thinkingConfig.includeThoughts = true;
+
+      const effort: Exclude<ReasoningEffort, "none" | "xhigh"> =
+        reasoning === "xhigh" ? "high" : reasoning;
+      const thinkingLevel = geminiThinkingLevel(model.id, effort);
+      if (thinkingLevel) thinkingConfig.thinkingLevel = thinkingLevel;
+    }
 
     config.thinkingConfig = thinkingConfig;
   }
@@ -315,8 +330,8 @@ function geminiThinkingLevel(modelId: string, effort: Exclude<ReasoningEffort, "
     switch (effort) {
       case "minimal":
       case "low":
-      case "medium":
         return ThinkingLevel.LOW;
+      case "medium":
       case "high":
         return ThinkingLevel.HIGH;
       default:

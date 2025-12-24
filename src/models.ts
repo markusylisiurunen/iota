@@ -65,7 +65,7 @@ const gpt52 = {
   name: "GPT-5.2",
   contextWindow: 128000,
   maxOutputTokens: 16384,
-  supports: { reasoning: true, tools: true, reasoningXhigh: false },
+  supports: { reasoning: true, tools: true, reasoningXhigh: true },
   pricing: {
     inputPer1M: 1.75,
     outputPer1M: 14,

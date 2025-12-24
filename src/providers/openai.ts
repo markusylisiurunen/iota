@@ -403,9 +403,10 @@ function buildParams(
     params.tools = convertTools(context.tools);
   }
 
-  if (model.supports.reasoning && (options.reasoning ?? "none") !== "none") {
+  const reasoning = options.reasoning;
+  if (model.supports.reasoning && reasoning !== "none") {
     params.reasoning = {
-      effort: mapReasoningEffort(options.reasoning),
+      effort: mapReasoningEffort(reasoning),
       summary: "auto",
     };
     params.include = ["reasoning.encrypted_content"];
@@ -527,10 +528,10 @@ function mapServiceTier(tier: ServiceTier): "flex" | "default" | "priority" {
   }
 }
 
-function mapReasoningEffort(effort: ReasoningEffort): Exclude<ReasoningEffort, "none" | "xhigh"> {
-  const value = effort === "none" ? "minimal" : effort;
-  if (value === "xhigh") return "high";
-  return value;
+function mapReasoningEffort(
+  effort: Exclude<ReasoningEffort, "none">,
+): Exclude<ReasoningEffort, "none"> {
+  return effort;
 }
 
 function usageFromOpenAI(u: {

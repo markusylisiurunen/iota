@@ -162,7 +162,13 @@ function buildParams(
   };
 
   if (context.system && context.system.trim().length > 0) {
-    params.system = sanitizeSurrogates(context.system);
+    params.system = [
+      {
+        type: "text",
+        text: sanitizeSurrogates(context.system),
+        cache_control: { type: "ephemeral" },
+      } as any,
+    ];
   }
 
   if (options.temperature !== undefined) {
@@ -236,6 +242,17 @@ function convertMessages(context: NormalizedContext): MessageParam[] {
           },
         ],
       });
+    }
+  }
+
+  const lastMessage = out.at(-1);
+  if (lastMessage?.role === "user" && Array.isArray(lastMessage.content)) {
+    const lastBlock = lastMessage.content.at(-1) as any;
+    if (
+      lastBlock &&
+      (lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
+    ) {
+      lastBlock.cache_control = { type: "ephemeral" };
     }
   }
 

@@ -88,4 +88,48 @@ describe("anthropic prompt caching", () => {
       cache_control: { type: "ephemeral" },
     });
   });
+
+  it("groups consecutive tool results into a single user message", async () => {
+    const model = getModel("anthropic", "opus-4.5");
+
+    const context: Context = {
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_call", id: "c1", name: "add", args: { a: 1 } },
+            { type: "tool_call", id: "c2", name: "add", args: { a: 2 } },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "c1",
+          toolName: "add",
+          content: '{"sum":3}',
+        },
+        {
+          role: "tool",
+          toolCallId: "c2",
+          toolName: "add",
+          content: '{"sum":4}',
+        },
+      ],
+    };
+
+    const s = stream(model, context, { apiKey: "test" });
+    await s.result();
+
+    expect(capturedParams.messages).toHaveLength(2);
+
+    const toolMessage = capturedParams.messages[1];
+    expect(toolMessage.role).toBe("user");
+    expect(toolMessage.content).toHaveLength(2);
+
+    expect(toolMessage.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "c1" });
+    expect(toolMessage.content[1]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "c2",
+      cache_control: { type: "ephemeral" },
+    });
+  });
 });

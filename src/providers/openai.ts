@@ -379,7 +379,7 @@ function buildParams(
   context: NormalizedContext,
   options: ResolvedStreamOptions,
 ): ResponseCreateParamsStreaming {
-  const messages = convertMessages(context);
+  const messages = convertMessages(model, context);
 
   const params: ResponseCreateParamsStreaming = {
     model: model.id,
@@ -415,11 +415,12 @@ function buildParams(
   return params;
 }
 
-function convertMessages(context: NormalizedContext): ResponseInput {
+function convertMessages(model: OpenAIModel, context: NormalizedContext): ResponseInput {
   const input: ResponseInput = [];
 
   if (context.system && context.system.trim().length > 0) {
-    input.push({ role: "system", content: sanitizeSurrogates(context.system) });
+    const role = model.supports.reasoning ? "developer" : "system";
+    input.push({ role, content: sanitizeSurrogates(context.system) });
   }
 
   let msgIndex = 0;

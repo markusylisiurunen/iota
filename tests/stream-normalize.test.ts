@@ -96,4 +96,34 @@ describe("normalizeContextForTarget", () => {
     expect(tool.role).toBe("tool");
     expect(tool.isError).toBe(false);
   });
+
+  it("inserts synthetic tool results for orphaned tool calls", () => {
+    const target = getModel("openai", "gpt-5.2");
+
+    const context: Context = {
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_call", id: "c1", name: "add", args: { a: 1 } }],
+        },
+        { role: "user", content: "next" },
+      ],
+    };
+
+    const normalized = normalizeContextForTarget(target, context);
+
+    expect(normalized.messages).toHaveLength(3);
+
+    const tool = normalized.messages[1] as any;
+    expect(tool).toMatchObject({
+      role: "tool",
+      toolCallId: "c1",
+      toolName: "add",
+      isError: true,
+      content: "No result provided",
+    });
+
+    const user = normalized.messages[2] as any;
+    expect(user).toMatchObject({ role: "user", content: "next" });
+  });
 });

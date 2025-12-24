@@ -42,4 +42,31 @@ describe("openai reasoning effort", () => {
 
     expect(capturedParams.reasoning).toMatchObject({ effort: "xhigh" });
   });
+
+  it("clamps maxTokens to 65536", async () => {
+    const model = getModel("openai", "gpt-5.2");
+
+    const context: Context = {
+      messages: [{ role: "user", content: "hello" }],
+    };
+
+    const s = stream(model, context, { apiKey: "test", maxTokens: 1_000_000 });
+    await s.result();
+
+    expect(capturedParams.max_output_tokens).toBe(65536);
+  });
+
+  it("uses developer role for the system prompt on reasoning models", async () => {
+    const model = getModel("openai", "gpt-5.2");
+
+    const context: Context = {
+      system: "system",
+      messages: [{ role: "user", content: "hello" }],
+    };
+
+    const s = stream(model, context, { apiKey: "test", reasoning: "none" });
+    await s.result();
+
+    expect(capturedParams.input?.[0]).toMatchObject({ role: "developer", content: "system" });
+  });
 });

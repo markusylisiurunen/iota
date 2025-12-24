@@ -45,7 +45,7 @@ export function stream(
     ...options,
     apiKey,
     reasoning,
-    maxTokens: options.maxTokens ?? model.maxOutputTokens,
+    maxTokens: Math.min(options.maxTokens ?? model.maxOutputTokens, 65536),
   };
 
   switch (model.provider) {
@@ -274,15 +274,75 @@ export function normalizeContextForTarget(target: Model, context: Context): Norm
     }
   }
 
+  const repaired = repairOrphanedToolCalls(messages);
+
   return {
     system,
-    messages: messages.filter((m) => {
+    messages: repaired.filter((m) => {
       if (m.role === "assistant") return m.content.length > 0;
       if (m.role === "user") return m.content.trim().length > 0;
       return true;
     }),
     tools: context.tools,
   };
+}
+
+function repairOrphanedToolCalls(messages: NormalizedMessage[]): NormalizedMessage[] {
+  type ToolCallPart = Extract<AssistantPart, { type: "tool_call" }>;
+
+  const out: NormalizedMessage[] = [];
+
+  let pendingToolCalls: ToolCallPart[] = [];
+  let existingToolResultIds = new Set<string>();
+
+  const flush = () => {
+    for (const call of pendingToolCalls) {
+      if (existingToolResultIds.has(call.id)) continue;
+
+      out.push({
+        role: "tool",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: "No result provided",
+        isError: true,
+      });
+    }
+
+    pendingToolCalls = [];
+    existingToolResultIds = new Set();
+  };
+
+  for (const msg of messages) {
+    switch (msg.role) {
+      case "assistant": {
+        if (pendingToolCalls.length > 0) flush();
+
+        const calls = msg.content.filter((p): p is ToolCallPart => p.type === "tool_call");
+        pendingToolCalls = calls;
+        existingToolResultIds = new Set();
+
+        out.push(msg);
+        continue;
+      }
+
+      case "tool": {
+        if (pendingToolCalls.length > 0) existingToolResultIds.add(msg.toolCallId);
+        out.push(msg);
+        continue;
+      }
+
+      case "user": {
+        if (pendingToolCalls.length > 0) flush();
+        out.push(msg);
+        continue;
+      }
+
+      default:
+        return exhaustive(msg);
+    }
+  }
+
+  return out;
 }
 
 function normalizeAssistantMessage(

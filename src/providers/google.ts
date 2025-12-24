@@ -272,20 +272,27 @@ function convertMessages(context: NormalizedContext): Content[] {
       }
 
       case "tool": {
-        contents.push({
-          role: "user",
-          parts: [
-            {
-              functionResponse: {
-                id: msg.toolCallId,
-                name: msg.toolName,
-                response: msg.isError
-                  ? { error: sanitizeSurrogates(msg.content) }
-                  : { output: sanitizeSurrogates(msg.content) },
-              },
-            },
-          ],
-        });
+        const part: Part = {
+          functionResponse: {
+            id: msg.toolCallId,
+            name: msg.toolName,
+            response: msg.isError
+              ? { error: sanitizeSurrogates(msg.content) }
+              : { output: sanitizeSurrogates(msg.content) },
+          },
+        };
+
+        const last = contents.at(-1);
+        if (
+          last?.role === "user" &&
+          Array.isArray(last.parts) &&
+          last.parts.some((p) => p.functionResponse)
+        ) {
+          last.parts.push(part);
+        } else {
+          contents.push({ role: "user", parts: [part] });
+        }
+
         continue;
       }
 

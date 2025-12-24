@@ -197,13 +197,6 @@ export function streamAnthropic(
         }
       }
 
-      output.content = output.content.filter((p) => {
-        if (p.type !== "thinking") return true;
-        if (p.text.trim().length === 0) return false;
-        if (p.meta?.provider !== "anthropic" || p.meta.type !== "thinking_signature") return false;
-        return p.meta.signature.trim().length > 0;
-      });
-
       ctrl.finish();
     } catch (error) {
       ctrl.fail(error);
@@ -257,7 +250,10 @@ function buildParams(
 function convertMessages(context: NormalizedContext): MessageParam[] {
   const out: MessageParam[] = [];
 
-  for (const msg of context.messages) {
+  for (let i = 0; i < context.messages.length; i++) {
+    const msg = context.messages[i];
+    if (!msg) continue;
+
     switch (msg.role) {
       case "user": {
         if (msg.content.trim().length > 0) {
@@ -311,17 +307,22 @@ function convertMessages(context: NormalizedContext): MessageParam[] {
       }
 
       case "tool": {
-        out.push({
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: sanitizeToolCallId(msg.toolCallId),
-              content: sanitizeSurrogates(msg.content),
-              is_error: msg.isError,
-            },
-          ],
-        });
+        const toolResults: ContentBlockParam[] = [];
+
+        for (; i < context.messages.length; i++) {
+          const next = context.messages[i];
+          if (!next || next.role !== "tool") break;
+
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: sanitizeToolCallId(next.toolCallId),
+            content: sanitizeSurrogates(next.content),
+            is_error: next.isError,
+          });
+        }
+
+        i--;
+        out.push({ role: "user", content: toolResults });
         continue;
       }
 

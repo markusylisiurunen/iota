@@ -32,6 +32,8 @@ Consumers iterate over the `AssistantStream` using `for await...of` to receive e
 
 **`src/providers/google.ts`**: Google Gemini API adapter.
 
+**`src/usage.ts`**: Helper for creating empty `Usage` objects.
+
 **`src/utils/json.ts`**: Safe JSON parsing for partial streaming data.
 
 **`src/utils/sanitize.ts`**: Fixes invalid unicode surrogate pairs to prevent SDK failures.
@@ -108,6 +110,8 @@ Normalization in `src/stream.ts` makes conversation history portable across prov
 
 **Empty messages**: Filtered out (empty text, assistant with no content).
 
+**Orphaned tool calls**: If an assistant message contains tool calls without matching tool results before the next user or assistant message, synthetic error tool messages are injected with `content: "No result provided"` and `isError: true`. This prevents provider API errors from malformed conversation history.
+
 ## Tool schema validation
 
 Validation in `src/stream.ts` ensures cross-provider compatibility.
@@ -150,8 +154,9 @@ Message history accumulates across turns. Each `AssistantMessage` and `ToolMessa
 
 - **`apiKey`** (`string?`): Provider API key. Falls back to `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GOOGLE_API_KEY` environment variables.
 - **`temperature`** (`number?`): Sampling temperature.
-- **`maxTokens`** (`number?`): Max output tokens. Defaults to `model.maxOutputTokens`.
+- **`maxTokens`** (`number?`): Max output tokens. Defaults to `model.maxOutputTokens`, capped at 65536.
 - **`reasoning`** (`ReasoningEffort?`): One of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`. Clamped to model capabilities.
+- **`serviceTier`** (`ServiceTier?`): OpenAI only. One of `flex`, `standard`, `priority`. Affects cost calculation: flex = 0.5x, standard = 1x, priority = 2x.
 - **`signal`** (`AbortSignal?`): Cancel the request. Sets `stopReason: "aborted"`.
 
 `AgentOptions` extends `StreamOptions` with `maxTurns` to limit the agent loop.

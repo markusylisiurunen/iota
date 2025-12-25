@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import OpenAI from "openai";
 import type {
   ResponseCreateParamsStreaming,
@@ -23,6 +24,8 @@ import type {
 import { createDebugLogger } from "../utils/debug-log.js";
 import { exhaustive } from "../utils/exhaustive.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
+
+const PROMPT_CACHE_KEY = randomUUID();
 
 type OpenAIModel = Extract<AnyModel, { provider: "openai" }>;
 
@@ -392,6 +395,8 @@ function buildParams(
     model: model.id,
     input: messages,
     stream: true,
+    store: false,
+    prompt_cache_key: PROMPT_CACHE_KEY,
   };
 
   if (options.maxTokens !== undefined) {
@@ -414,7 +419,7 @@ function buildParams(
   if (model.supports.reasoning && reasoning !== "none") {
     params.reasoning = {
       effort: mapReasoningEffort(reasoning),
-      summary: "auto",
+      summary: "detailed",
     };
     params.include = ["reasoning.encrypted_content"];
   }

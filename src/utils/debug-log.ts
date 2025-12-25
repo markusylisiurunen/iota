@@ -23,12 +23,14 @@ export function createDebugLogger(provider: string): DebugLogger {
   const base = `${provider}-${formatTimestamp()}`;
   const logPath = path.join(debugDir, `${base}.json`);
   const responseEvents: unknown[] = [];
-  let requestPayload: unknown = undefined;
+  let requestPayload: unknown;
 
   let dirReady: Promise<void> | null = null;
   const ensureDir = () => {
     if (!dirReady) {
-      dirReady = mkdir(debugDir, { recursive: true }).then(() => undefined).catch(() => undefined);
+      dirReady = mkdir(debugDir, { recursive: true })
+        .then(() => undefined)
+        .catch(() => undefined);
     }
     return dirReady;
   };
@@ -67,9 +69,5 @@ function formatTimestamp(): string {
 }
 
 function stringify(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, v) => (typeof v === "bigint" ? v.toString() : v),
-    2,
-  );
+  return JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v), 2);
 }

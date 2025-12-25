@@ -20,8 +20,8 @@ import type {
   Tool,
   Usage,
 } from "../types.js";
-import { exhaustive } from "../utils/exhaustive.js";
 import { createDebugLogger } from "../utils/debug-log.js";
+import { exhaustive } from "../utils/exhaustive.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
 type OpenAIModel = Extract<AnyModel, { provider: "openai" }>;

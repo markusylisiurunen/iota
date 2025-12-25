@@ -19,6 +19,7 @@ import type {
   Tool,
   Usage,
 } from "../types.js";
+import { createDebugLogger } from "../utils/debug-log.js";
 import { exhaustive } from "../utils/exhaustive.js";
 import { parseStreamingJson } from "../utils/json.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
@@ -42,14 +43,18 @@ export function streamAnthropic(
     const toolCallPartialJsonByIndex = new Map<number, string>();
     const thinkingSignatureByIndex = new Map<number, string>();
 
+    const debug = createDebugLogger("anthropic");
+
     try {
       const client = createClient(options.apiKey, options.reasoning !== "none");
       const params = buildParams(model, context, options);
+      debug.logRequest(params);
       const anthropicStream = client.messages.stream(params, {
         signal: options.signal,
       });
 
       for await (const event of anthropicStream) {
+        debug.logResponseEvent(event);
         switch (event.type) {
           case "message_start": {
             ctrl.setUsage(
@@ -200,6 +205,8 @@ export function streamAnthropic(
       ctrl.finish();
     } catch (error) {
       ctrl.fail(error);
+    } finally {
+      await debug.flushResponse();
     }
   })();
 

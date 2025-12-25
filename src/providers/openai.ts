@@ -21,6 +21,7 @@ import type {
   Usage,
 } from "../types.js";
 import { exhaustive } from "../utils/exhaustive.js";
+import { createDebugLogger } from "../utils/debug-log.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
 type OpenAIModel = Extract<AnyModel, { provider: "openai" }>;
@@ -49,6 +50,8 @@ export function streamOpenAI(
 
     const toolCallArgsJsonByIndex = new Map<number, string>();
 
+    const debug = createDebugLogger("openai");
+
     try {
       const client = new OpenAI({
         apiKey: options.apiKey,
@@ -56,15 +59,19 @@ export function streamOpenAI(
       });
 
       const params = buildParams(model, context, options);
+      debug.logRequest(params);
       const openaiStream = await client.responses.create(params, { signal: options.signal });
 
       for await (const event of openaiStream) {
+        debug.logResponseEvent(event);
         handleEvent(event);
       }
 
       ctrl.finish();
     } catch (error) {
       ctrl.fail(error);
+    } finally {
+      await debug.flushResponse();
     }
 
     function handleEvent(event: ResponseStreamEvent): void {

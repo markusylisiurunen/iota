@@ -22,6 +22,7 @@ import type {
   Tool,
   Usage,
 } from "../types.js";
+import { createDebugLogger } from "../utils/debug-log.js";
 import { exhaustive } from "../utils/exhaustive.js";
 import { sanitizeSurrogates } from "../utils/sanitize.js";
 
@@ -43,6 +44,8 @@ export function streamGoogle(
   (async () => {
     const output = ctrl.output;
 
+    const debug = createDebugLogger("google");
+
     try {
       const client = new GoogleGenAI({
         apiKey: options.apiKey,
@@ -50,6 +53,7 @@ export function streamGoogle(
       });
 
       const params = buildParams(model, context, options);
+      debug.logRequest(params);
       const googleStream = await client.models.generateContentStream(params);
 
       let currentIndex: number | null = null;
@@ -72,6 +76,7 @@ export function streamGoogle(
       };
 
       for await (const chunk of googleStream) {
+        debug.logResponseEvent(chunk);
         const candidate = chunk.candidates?.[0];
 
         if (candidate?.content?.parts) {
@@ -143,6 +148,8 @@ export function streamGoogle(
       ctrl.finish();
     } catch (error) {
       ctrl.fail(error);
+    } finally {
+      await debug.flushResponse();
     }
   })();
 

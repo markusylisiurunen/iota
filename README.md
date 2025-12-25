@@ -16,9 +16,12 @@ iota looks for API keys in environment variables:
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export GOOGLE_API_KEY=...
+export IOTA_DEBUG_LOG_DIR=/path/to/logs
 ```
 
 you can also pass a key explicitly via `options.apiKey`.
+
+when `IOTA_DEBUG_LOG_DIR` is set, iota writes near-raw request/response payloads as a single pretty-printed JSON file (e.g. `openai-2025-01-01T12-00-00-000Z.json`).
 
 ## quickstart
 

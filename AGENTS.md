@@ -161,6 +161,10 @@ Message history accumulates across turns. Each `AssistantMessage` and `ToolMessa
 
 `AgentOptions` extends `StreamOptions` with `maxTurns` to limit the agent loop.
 
+## Debug logging
+
+Set `IOTA_DEBUG_LOG_DIR` to a directory path to write near-raw request/response payloads as a pretty-printed JSON file with a provider prefix and timestamp (for example `openai-2025-01-01T12-00-00-000Z.json`).
+
 ## Error handling
 
 **Pre-stream validation errors**: Thrown synchronously for missing API keys, unsupported tools, or invalid schemas.
